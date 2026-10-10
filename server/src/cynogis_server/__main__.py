@@ -1,13 +1,14 @@
+import asyncio
 import logging
 import sys
 
-from .app import mcp
+from .app import run
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    mcp.run()
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

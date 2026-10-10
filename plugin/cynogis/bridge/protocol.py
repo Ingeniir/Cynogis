@@ -25,21 +25,22 @@ class Response:
     data: Any = None
     warnings: list[str] = field(default_factory=list)
     error: dict[str, Any] | None = None
+    audit_id: str | None = None
 
     @classmethod
     def failure(cls, request_id: str | None, err: ToolError) -> Response:
         return cls(id=request_id, ok=False, error=err.to_dict())
 
     def encode(self) -> bytes:
-        payload: dict[str, Any] = {"v": PROTOCOL_VERSION, "id": self.id, "ok": self.ok}
-
+        payload: dict[str, Any] = {"v": PROTOCOL_VERSION, "id": self.id, "ok": self.ok,
+                                   "audit_id": self.audit_id}
         if self.ok:
             payload["data"] = self.data
             payload["warnings"] = self.warnings
         else:
             payload["error"] = self.error
-
         return json.dumps(payload, ensure_ascii=False, default=str).encode(ENCODING) + b"\n"
+
 
 def _protocol_error(message: str) -> ToolError:
     return ToolError(ErrorCode.PROTOCOL_ERROR, message)

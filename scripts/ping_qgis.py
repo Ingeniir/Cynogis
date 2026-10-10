@@ -1,20 +1,22 @@
-"""Teste le pont QGIS sans IA. À lancer depuis PyCharm (clic droit > Run)."""
+"""Teste le pont QGIS sans IA (clic droit > Run dans PyCharm)."""
 import asyncio
 import json
-import sys
 
 from cynogis_server.client import BridgeError, QgisBridgeClient
 
 
 async def main() -> None:
-    sys.stdout.reconfigure(encoding="utf-8")  # console Windows cp1252 : ✓/✗
     client = QgisBridgeClient()
-    for method in ("ping", "get_project_info"):
-        try:
+    try:
+        for method in ("ping", "get_project_info"):
             result = await client.call(method)
             print(f"✓ {method} :", json.dumps(result.data, indent=2, ensure_ascii=False))
-        except BridgeError as exc:
-            print(f"✗ {method} : {exc}")
+            for w in result.warnings:
+                print("  ⚠", w)
+        tools = (await client.call("list_tools")).data["tools"]
+        print("✓ Outils :", ", ".join(f"{t['name']} (N{t['level']})" for t in tools))
+    except BridgeError as exc:
+        print(f"✗ {exc}")
 
 
 if __name__ == "__main__":

@@ -9,12 +9,18 @@ from qgis.PyQt.QtGui import QIcon
 from .bridge.connection import new_token, remove_connection_file, write_connection_file
 from .bridge.server import HOST, BridgeServer
 from .compat import QAction
+from .core.audit import AuditLog
 from .core.dispatcher import Dispatcher
 from .core.log import setup_logging, teardown_logging
-from .tools import system
+from .core.policy import PermissionPolicy
+from .core.registry import Level, ToolRegistry
+from .tools import layers, system
+from .ui.confirm import make_confirmer
 
 PLUGIN_DIR = Path(__file__).resolve().parent
-MENU = "&GeoMCP"
+DATA_DIR = Path.home() / ".cynogis"
+MENU = "&Cynogis"
+TOOL_MODULES = (system, layers)
 logger = logging.getLogger("cynogis")
 
 
@@ -25,8 +31,15 @@ class CynogisPlugin:
         self._bridge: BridgeServer | None = None
         self._token: str | None = None
         self._log_handler = setup_logging()
-        self._dispatcher = Dispatcher()
-        system.register(self._dispatcher)
+        registry = ToolRegistry()
+        for module in TOOL_MODULES:
+            registry.register_module(module)
+        self._dispatcher = Dispatcher(
+            registry,
+            policy=PermissionPolicy(max_level=Level.DESTROY, confirm=make_confirmer(iface.mainWindow())),
+            audit=AuditLog(DATA_DIR / "audit"),
+        )
+        logger.info("Outils chargés : %s", ", ".join(registry.names))
 
     # --- Cycle de vie QGIS --------------------------------------------------
     def initGui(self) -> None:

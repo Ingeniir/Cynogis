@@ -35,6 +35,7 @@ Une ligne JSON UTF-8 par message.
 ## Contraintes
 
 - `plugin/cynogis/__init__.py`, `core/dispatcher.py`, `core/errors.py`, `bridge/protocol.py` : **aucun import `qgis`** (testés sans QGIS).
+- Chaque sous-dossier du plugin doit avoir un `__init__.py` (même vide) : sans lui, le hook d'import de QGIS ne suit pas les modules, ils survivent au déchargement et un rechargement mélange anciennes et nouvelles classes.
 - Imports Qt sensibles à la version (ex. `QAction`) → passer par `compat.py`. Cible : QGIS 3.x (Qt5) et 4.x (Qt6).
 - Les handlers tournent sur le thread principal de QGIS : pas d'appel bloquant long.
 - Logger : `logging.getLogger("cynogis...")` uniquement (seul le logger `cynogis` est redirigé vers le journal QGIS, onglet « Cynogis »).

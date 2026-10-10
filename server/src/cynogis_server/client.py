@@ -28,6 +28,7 @@ class BridgeError(Exception):
 class BridgeResult:
     data: Any
     warnings: list[str] = field(default_factory=list)
+    audit_id : str | None = None
 
 
 class QgisBridgeClient:
@@ -80,4 +81,4 @@ class QgisBridgeClient:
             err = response.get("error") or {}
             raise BridgeError(err.get("code", "UNKNOWN"), err.get("message", "Erreur inconnue"),
                               err.get("details"))
-        return BridgeResult(response.get("data"), response.get("warnings") or [])
+        return BridgeResult(response.get("data"), response.get("warnings") or [], response.get("audit_id"))
