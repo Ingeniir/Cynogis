@@ -24,6 +24,7 @@ class Param:
     minimum: float | None = None
     maximum: float | None = None
     items: str | None = None
+    items_enum: tuple[Any, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.type not in _JSON_TYPES:
@@ -40,7 +41,10 @@ class Param:
         if self.maximum is not None:
             schema["maximum"] = self.maximum
         if self.type == "array":
-            schema["items"] = {"type": self.items} if self.items else {}
+            items: dict[str, Any] = {"type": self.items} if self.items else {}
+            if self.items_enum is not None:
+                items["enum"] = list(self.items_enum)
+            schema["items"] = items
         if not self.required and self.default is not None:
             schema["default"] = self.default
         return schema
@@ -66,6 +70,11 @@ def _check(name: str, p: Param, value: Any) -> str | None:
         bad = [i for i, v in enumerate(value) if not _type_ok(v, p.items)]
         if bad:
             return f"{name} : éléments de type {p.items} attendus (indices {bad[:5]})"
+    if p.type == "array" and p.items_enum is not None:
+        bad_values = [v for v in value if v not in p.items_enum]
+        if bad_values:
+            return (f"{name} : valeurs non autorisées {bad_values[:5]} 0"
+                    f"(choix : {', '.join(map(str, p.items_enum))})")
     return None
 
 

@@ -41,3 +41,10 @@ def test_object_schema():
     assert schema["required"] == ["layer_id"]
     assert schema["additionalProperties"] is False
     assert schema["properties"]["fields"]["items"] == {"type": "string"}
+
+def test_items_enum():
+    spec = {"metrics": Param("array", "M", items="string", items_enum=("area", "length"))}
+    assert validate_params(spec, {"metrics": ["area"]}) == {"metrics": ["area"]}
+    with pytest.raises(ToolError, match="non autorisées"):
+        validate_params(spec, {"metrics": ["volume"]})
+    assert object_schema(spec)["properties"]["metrics"]["items"]["enum"] == ["area", "length"]

@@ -6,15 +6,7 @@
   <component name="ChangeListManager">
     <list default="true" id="779a0765-2b87-4638-9997-bd8e8a9936c3" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/plugin/cynogis/bridge/protocol.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/bridge/protocol.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/plugin/cynogis/core/dispatcher.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/core/dispatcher.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/plugin/cynogis/plugin.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/plugin.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/system.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/tools/system.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/ping_qgis.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/ping_qgis.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/server/src/cynogis_server/__main__.py" beforeDir="false" afterPath="$PROJECT_DIR$/server/src/cynogis_server/__main__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/server/src/cynogis_server/app.py" beforeDir="false" afterPath="$PROJECT_DIR$/server/src/cynogis_server/app.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/server/src/cynogis_server/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/server/src/cynogis_server/client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/unit/test_protocol.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/unit/test_protocol.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/plugin/cynogis/core/schema.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/core/schema.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -275,7 +267,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1791551528772</updated>
-      <workItem from="1791551714164" duration="12619000" />
+      <workItem from="1791551714164" duration="13472000" />
     </task>
     <servers />
   </component>
