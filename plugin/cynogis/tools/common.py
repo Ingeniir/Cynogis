@@ -10,6 +10,12 @@ from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsCsException,
+    QgsDistanceArea,
+    QgsExpression,
+    QgsExpressionContext,
+    QgsExpressionContextUtils,
+    QgsFeatureRequest,
+    QgsGeometry,
     QgsMapLayer,
     QgsProject,
     QgsProviderRegistry,
@@ -18,6 +24,8 @@ from qgis.core import (
     QgsUnitTypes,
     QgsVectorLayer,
 )
+from qgis.PyQt.QtCore import Qt
+
 
 from ..core.errors import ErrorCode, ToolError
 from ..core.territory import UNKNOWN, detect_territory
@@ -127,3 +135,116 @@ def territory_info(layer: QgsMapLayer) -> tuple[dict[str, Any], list[str]]:
         warnings.append(f"{layer.name()} : SCR {crs.authid()} différent du SCR de référence "
                         f"{territory.epsg} ({territory.name}).")
     return (territory.as_dict() if territory else dict(UNKNOWN)), warnings
+
+# --- Valeurs ---------------------------------------------------------------
+def to_json_value(value: Any) -> Any:
+    """Convertit une valeur d'attribut QGIS (NULL, QDate…) en valeur JSON."""
+    if value is None:
+        return None
+    if isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return clean_number(value)
+    if isinstance(value, (list, tuple)):
+        return [to_json_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): to_json_value(v) for k, v in value.items()}
+    if hasattr(value, "isNull") and value.isNull():  # NULL (QVariant), QDate nulle…
+        return None
+    if hasattr(value, "toString"):  # QDate, QDateTime, QTime
+        try:
+            return value.toString(Qt.DateFormat.ISODate)
+        except TypeError:
+            return value.toString()
+    return str(value)
+
+
+def group_key(value: Any) -> Any:
+    """Valeur utilisable comme clé de regroupement (hashable)."""
+    v = to_json_value(value)
+    return v if v is None or isinstance(v, (str, int, float, bool)) else str(v)
+
+
+# --- Champs et expressions --------------------------------------------------
+def require_field(layer: QgsVectorLayer, name: str) -> str:
+    """Renvoie le nom exact du champ (insensible à la casse) ou lève INVALID_PARAMS."""
+    fields = layer.fields()
+    idx = fields.lookupField(name)
+    if idx < 0:
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        f"Champ {name!r} introuvable dans {layer.name()}.",
+                        {"available": fields.names()})
+    return fields.at(idx).name()
+
+
+def expression_context(layer: QgsVectorLayer) -> QgsExpressionContext:
+    return QgsExpressionContext(QgsExpressionContextUtils.globalProjectLayerScopes(layer))
+
+
+def prepare_expression(text: str, layer: QgsVectorLayer,
+                       label: str = "expression") -> tuple[QgsExpression, QgsExpressionContext]:
+    """Analyse et prépare une expression QGIS. Détecte la syntaxe invalide et les champs inconnus."""
+    expression = QgsExpression(text)
+    if expression.hasParserError():
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        f"{label} invalide : {expression.parserErrorString()}",
+                        {"expression": text})
+    context = expression_context(layer)
+    if not expression.prepare(context):
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        f"{label} invalide : {expression.evalErrorString()}",
+                        {"expression": text, "fields": layer.fields().names()})
+    return expression, context
+
+
+def feature_request(layer: QgsVectorLayer, filter_expression: str | None = None,
+                    attributes: list[str] | None = None, geometry: bool = True) -> QgsFeatureRequest:
+    """Requête optimisée. attributes=None : tous les champs ; [] : aucun champ."""
+    request = QgsFeatureRequest()
+    filter_needs_geometry = False
+    if filter_expression:
+        expression, context = prepare_expression(filter_expression, layer, "filter_expression")
+        filter_needs_geometry = expression.needsGeometry()
+        request.setFilterExpression(filter_expression)
+        request.setExpressionContext(context)
+    if attributes is not None:
+        if attributes:
+            request.setSubsetOfAttributes(list(dict.fromkeys(attributes)), layer.fields())
+        else:
+            request.setNoAttributes()
+    if not geometry and not filter_needs_geometry:
+        request.setFlags(Qgis.FeatureRequestFlag.NoGeometry)
+    return request
+
+
+# --- Mesures ---------------------------------------------------------------
+def distance_area(crs: QgsCoordinateReferenceSystem, method: str = "ellipsoidal") -> QgsDistanceArea:
+    """ellipsoidal : mesure sur l'ellipsoïde (GRS80 par défaut, celui du RGR92 et du RGM04).
+    planar : mesure dans le SCR de la couche (qui doit être projeté)."""
+    if not crs.isValid():
+        raise ToolError(ErrorCode.INVALID_PARAMS, "SCR de la couche non défini : mesure impossible.")
+    project = QgsProject.instance()
+    da = QgsDistanceArea()
+    da.setSourceCrs(crs, project.transformContext())
+    if method == "ellipsoidal":
+        ellipsoid = project.ellipsoid()
+        da.setEllipsoid(ellipsoid if ellipsoid and ellipsoid != "NONE" else "GRS80")
+    else:
+        if crs.isGeographic():
+            raise ToolError(ErrorCode.CRS_GEOGRAPHIC,
+                            f"Mesure planaire impossible en SCR géographique ({crs.authid()}). "
+                            "Utilise method='ellipsoidal' ou reprojette la couche.")
+        da.setEllipsoid("NONE")
+    return da
+
+
+def area_m2(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
+    return da.convertAreaMeasurement(da.measureArea(geometry), Qgis.AreaUnit.SquareMeters)
+
+
+def length_m(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
+    return da.convertLengthMeasurement(da.measureLength(geometry), Qgis.DistanceUnit.Meters)
+
+
+def perimeter_m(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
+    return da.convertLengthMeasurement(da.measurePerimeter(geometry), Qgis.DistanceUnit.Meters)
