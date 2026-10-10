@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cynogis-server"
+version = "0.1.0"
+description = "Serveur MCP pour piloter QGIS (bureau d'études, La Réunion & Mayotte"
+requires-python = ">=3.10"
+dependencies=["mcp>=1.20.0,<2"]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.6", "pytest>=8"]
+
+[project.scripts]
+cynogis-server = "cynogis_server.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["server/src/cynogis_server"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["plugin", "server/src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["plugin", "server/src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF"]
+ignore = ["N802"]

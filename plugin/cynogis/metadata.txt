@@ -1,0 +1,13 @@
+[general]
+name=Cynogis Réunion-Mayotte
+qgisMinimumVersion=3.12
+qgisMaximumVersion=4.99
+supportsQt6=True
+description=Pilotage de QGIS par une IA via protocole MCP
+about=Traitements géographiques, édition vectorielle, statistiques et analyse paysagère pour La Réunion et Mayotte, avec garde-fous et validation humaine.
+version=0.1.0
+author=Hoareau Cédric
+email=hoareau.cedric97470@gmail.com
+experimental=True
+deprecated=False
+icon=icons/icon.svg
