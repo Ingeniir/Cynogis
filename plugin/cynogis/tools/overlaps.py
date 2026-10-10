@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from typing import Any
+
 from qgis.core import (
+    Qgis,
     QgsCoordinateTransform,
     QgsCsException,
+    QgsFeature,
     QgsFeatureRequest,
     QgsGeometry,
+    QgsMemoryProviderUtils,
     QgsProject,
     QgsSpatialIndex,
+    QgsWkbTypes,
 )
 
 from ..core.dispatcher import ToolResult
@@ -14,8 +20,18 @@ from ..core.errors import ErrorCode, ToolError
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.units import AREA_UNITS, convert_area
-from .common import area_m2, distance_area, feature_request, geometry_kind, get_vector_layer
+from .common import (
+    area_m2,
+    distance_area,
+    feature_request,
+    geometry_kind,
+    get_vector_layer,
+    group_key,
+    require_field,
+)
 from .features import FILTER_HELP
+from .geoprocessing import OUTPUT_NAME
+from .outputs import run_to_project
 
 
 @tool(level=Level.READ, params={
@@ -125,3 +141,98 @@ def detect_overlaps(layer_id: str, other_layer_id: str | None, min_area_m2: floa
         warnings.append("Une zone couverte par 3 entités ou plus est comptée plusieurs fois dans "
                         "total_overlap_area.")
     return ToolResult(data, warnings)
+
+
+def _priority_order(features: list[QgsFeature], field: str | None,
+                    descending: bool) -> list[QgsFeature]:
+    """Tri par priorité (valeurs nulles en dernier) ; sans champ, ordre des fid."""
+    if field is None:
+        return features
+    keyed = [(group_key(f[field]), f) for f in features]
+    filled = sorted((kf for kf in keyed if kf[0] is not None), key=lambda kf: kf[0],
+                    reverse=descending)
+    return [f for _, f in filled] + [f for k, f in keyed if k is None]
+
+
+def _as_multipolygon(geom: QgsGeometry) -> QgsGeometry | None:
+    """Ne garde que les parties surfaciques (une différence peut produire lignes ou points)."""
+    poly = geom.convertToType(Qgis.GeometryType.Polygon, True)
+    return None if poly is None or poly.isNull() or poly.isEmpty() else poly
+
+
+@tool(level=Level.CREATE, params={
+    "layer_id": Param("string", "Couche de polygones (layer_id)."),
+    "priority_field": Param("string", "Champ de priorité : l'entité la plus prioritaire garde la "
+                            "zone commune. Défaut : ordre des fid (la première l'emporte).",
+                            required=False),
+    "descending": Param("boolean", "Priorité aux valeurs les plus grandes de priority_field.",
+                        required=False, default=True),
+    "output_name": OUTPUT_NAME,
+})
+def resolve_overlaps(layer_id: str, priority_field: str | None, descending: bool,
+                     output_name: str | None) -> ToolResult:
+    """Produit une copie de la couche SANS chevauchements : chaque zone couverte par plusieurs
+    polygones est attribuée à un seul, le plus prioritaire ; les autres sont découpés. Attributs
+    conservés, couche d'origine intacte. Les entités entièrement recouvertes disparaissent
+    (fid listés dans removed_fids). Utilise detect_overlaps avant pour mesurer l'enjeu."""
+    layer = get_vector_layer(layer_id)
+    if geometry_kind(layer) != "polygon":
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'est pas une couche de "
+                        "polygones.")
+    field = require_field(layer, priority_field) if priority_field else None
+    da = distance_area(layer.crs(), "ellipsoidal")
+    result = QgsMemoryProviderUtils.createMemoryLayer(
+        "resolve_overlaps", layer.fields(), QgsWkbTypes.multiType(layer.wkbType()), layer.crs())
+
+    index = QgsSpatialIndex()
+    placed: dict[int, QgsGeometry] = {}
+    out: list[QgsFeature] = []
+    removed: list[int] = []
+    failed: list[int] = []
+    trimmed = repaired = 0
+    removed_area = 0.0
+    for feature in _priority_order(list(layer.getFeatures()), field, descending):
+        geom = feature.geometry()
+        if geom.isNull() or geom.isEmpty():
+            continue
+        if not geom.isGeosValid():
+            geom = geom.makeValid()
+            repaired += 1
+        candidates = [placed[i] for i in index.intersects(geom.boundingBox())]
+        blockers = [g for g in candidates if g.intersects(geom)]
+        if blockers:
+            cut = geom.difference(QgsGeometry.unaryUnion(blockers))
+            if cut.isNull():  # échec GEOS
+                failed.append(feature.id())
+                continue
+            removed_area += area_m2(da, geom) - (area_m2(da, cut) if not cut.isEmpty() else 0)
+            geom = cut
+        poly = _as_multipolygon(geom)
+        if poly is None:
+            removed.append(feature.id())
+            continue
+        trimmed += bool(blockers)
+        placed[feature.id()] = poly
+        index.addFeature(feature.id(), poly.boundingBox())
+        new = QgsFeature(feature)
+        new.setGeometry(poly)
+        out.append(new)
+    if not result.dataProvider().addFeatures(out):
+        raise ToolError(ErrorCode.INTERNAL_ERROR, "Copie des entités impossible.",
+                        {"error": result.dataProvider().lastError()})
+
+    tool_result = run_to_project("native:savefeatures", {"INPUT": result},
+                                 output_name or f"sans_chevauchement_{layer.name()}")
+    stats: dict[str, Any] = {
+        "features_out": len(out), "trimmed": trimmed, "removed_fids": removed[:200],
+        "removed_count": len(removed), "repaired_inputs": repaired,
+        "overlap_area_removed_m2": round(removed_area, 2),
+        "priority": f"{field} {'desc' if descending else 'asc'}" if field else "fid",
+    }
+    tool_result.data.update(stats)
+    if failed:
+        tool_result.warnings.append(f"{len(failed)} entité(s) non traitées (échec GEOS), "
+                                    f"absentes de la sortie : fid {failed[:50]}.")
+    if repaired:
+        tool_result.warnings.append(f"{repaired} géométrie(s) invalide(s) réparée(s) à la volée.")
+    return tool_result
