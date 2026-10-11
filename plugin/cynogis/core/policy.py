@@ -14,7 +14,7 @@ Confirmer = Callable[[ToolSpec, dict[str, Any]], bool]
 @dataclass
 class PermissionPolicy:
     max_level: Level = Level.DESTROY
-    confirm: Confirmer | None = None 
+    confirm: Confirmer | None = None
 
     def check(self, spec: ToolSpec, params: dict[str, Any]) -> None:
         if spec.level > self.max_level:
