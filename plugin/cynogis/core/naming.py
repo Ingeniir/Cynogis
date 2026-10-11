@@ -10,10 +10,18 @@ _WINDOWS_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(10))
                      *(f"lpt{i}" for i in range(10))}
 
 
+def _ascii(text: str) -> str:
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+
+
+def normalize(text: str) -> str:
+    """Forme comparable : sans accents, minuscules, espaces simples (« Forêt  Ö » → « foret o »)."""
+    return " ".join(_ascii(text).lower().split())
+
+
 def clean_name(text: str, default: str = "sortie") -> str:
     """« Zones tampon 50 m (Saint-Paul) » → « zones_tampon_50_m_saint_paul »."""
-    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
-    name = re.sub(r"[^a-z0-9]+", "_", ascii_text.lower()).strip("_")[:MAX_NAME_CHARS].rstrip("_")
+    name = re.sub(r"[^a-z0-9]+", "_", _ascii(text).lower()).strip("_")[:MAX_NAME_CHARS].rstrip("_")
     if name in _WINDOWS_RESERVED:
         name += "_"
     return name or default

@@ -40,7 +40,7 @@ Tout se passe dans le plugin ; rien à modifier côté serveur.
 
 - Toujours passer par `tools/outputs.py::run_to_project(algorithm_id, params, output_name)` : écrit un GeoPackage (`.tif` pour un raster) neuf dans `<projet>/mcp_outputs/` (repli `~/.cynogis/mcp_outputs` + warning si projet non enregistré), nom nettoyé par `core/naming.py`, **jamais d'écrasement** (suffixe `_2`, `_3`…), couche ajoutée au groupe « Cynogis ».
 - Résultat calculé en Python (ex. `resolve_overlaps`) : remplir une couche mémoire puis `run_to_project("native:savefeatures", {"INPUT": couche_memoire}, nom)`.
-- `run_algorithm` n'accepte que la liste blanche `ALLOWED_ALGORITHMS` de `tools/algorithms.py` ; les paramètres de sortie sont imposés par Cynogis, jamais par l'IA.
+- `run_algorithm` n'accepte que la liste blanche `ALGORITHMS` de `core/algorithms.py` (catalogue pur, testé ; ajouter un `AlgorithmSpec` = autoriser l'algorithme) ; les paramètres de sortie sont imposés par Cynogis, jamais par l'IA.
 
 ## Contraintes
 

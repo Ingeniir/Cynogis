@@ -5,6 +5,7 @@ from typing import Any
 
 from qgis.core import QgsApplication, QgsProcessingAlgorithm
 
+from ..core import algorithms as catalog
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
 from ..core.registry import Level, tool
@@ -12,25 +13,12 @@ from ..core.schema import Param
 from .common import to_json_value
 from .outputs import is_optional, run_to_project
 
-# Liste blanche : algorithmes vecteur sans effet de bord hors de leurs sorties (gérées par
-# Cynogis). Ajouter un algorithme ici = l'autoriser pour l'IA.
-ALLOWED_ALGORITHMS = (
-    "native:buffer", "native:dissolve", "native:fixgeometries", "native:reprojectlayer",
-    "native:extractbyexpression", "native:extractbylocation", "native:extractbyattribute",
-    "native:intersection", "native:union", "native:difference", "native:clip",
-    "native:symmetricaldifference", "native:centroids", "native:pointonsurface",
-    "native:convexhull", "native:simplifygeometries", "native:multiparttosingleparts",
-    "native:collect", "native:deleteduplicategeometries", "native:joinattributesbylocation",
-    "native:joinattributestable", "native:mergevectorlayers", "native:fieldcalculator",
-    "native:countpointsinpolygon", "native:polygonstolines", "native:boundary",
-    "native:savefeatures",
-)
 MAX_HELP_CHARS = 1500
 
 
 def _allowed(algorithm_id: str) -> QgsProcessingAlgorithm:
     alg = QgsApplication.processingRegistry().algorithmById(algorithm_id) \
-        if algorithm_id in ALLOWED_ALGORITHMS else None
+        if catalog.is_allowed(algorithm_id) else None
     if alg is None:
         raise ToolError(ErrorCode.ALGORITHM_NOT_ALLOWED,
                         f"Algorithme {algorithm_id!r} non autorisé ou indisponible. "
@@ -39,22 +27,19 @@ def _allowed(algorithm_id: str) -> QgsProcessingAlgorithm:
 
 
 @tool(level=Level.READ, params={
-    "query": Param("string", "Filtre texte sur l'identifiant ou le nom (ex. buffer, jointure).",
+    "query": Param("string", "Mots-clés (accents et casse ignorés), ex. tampon, jointure, mnt.",
                    required=False),
+    "category": Param("string", "Filtre par catégorie.", required=False,
+                      enum=catalog.CATEGORIES),
 })
-def list_algorithms(query: str | None) -> dict:
-    """Algorithmes Processing autorisés pour run_algorithm (liste blanche) : identifiant, nom
-    et groupe. Avant d'en lancer un, lis ses paramètres avec describe_algorithm."""
-    items = []
-    for algorithm_id in ALLOWED_ALGORITHMS:
-        alg = QgsApplication.processingRegistry().algorithmById(algorithm_id)
-        if alg is None:
-            continue
-        item = {"id": algorithm_id, "name": alg.displayName(), "group": alg.group()}
-        if query and query.lower() not in f"{algorithm_id} {item['name']}".lower():
-            continue
-        items.append(item)
-    return {"count": len(items), "algorithms": items}
+def list_algorithms(query: str | None, category: str | None) -> dict:
+    """Algorithmes Processing autorisés pour run_algorithm (liste blanche relue par un humain) :
+    identifiant, libellé, catégorie et résumé. Avant d'en lancer un, lis ses paramètres avec
+    describe_algorithm."""
+    registry = QgsApplication.processingRegistry()
+    items = [spec.to_dict() for spec in catalog.search_algorithms(query, category)
+             if registry.algorithmById(spec.algorithm_id) is not None]
+    return {"count": len(items), "categories": list(catalog.CATEGORIES), "algorithms": items}
 
 
 @tool(level=Level.READ, params={

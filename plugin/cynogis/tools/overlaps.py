@@ -8,16 +8,28 @@ from qgis.core import (
     QgsCsException,
     QgsFeature,
     QgsFeatureRequest,
+    QgsField,
+    QgsFields,
     QgsGeometry,
     QgsMemoryProviderUtils,
+    QgsPointXY,
     QgsProject,
     QgsSpatialIndex,
     QgsWkbTypes,
 )
+from qgis.PyQt.QtCore import QMetaType
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
 from ..core.registry import Level, tool
+from ..core.resolve import (
+    ORDERS,
+    STRATEGIES,
+    half_plane_corners,
+    needs_priority_field,
+    rank_records,
+    summarize_resolution,
+)
 from ..core.schema import Param
 from ..core.units import AREA_UNITS, convert_area
 from .common import (
@@ -143,15 +155,10 @@ def detect_overlaps(layer_id: str, other_layer_id: str | None, min_area_m2: floa
     return ToolResult(data, warnings)
 
 
-def _priority_order(features: list[QgsFeature], field: str | None,
-                    descending: bool) -> list[QgsFeature]:
-    """Tri par priorité (valeurs nulles en dernier) ; sans champ, ordre des fid."""
-    if field is None:
-        return features
-    keyed = [(group_key(f[field]), f) for f in features]
-    filled = sorted((kf for kf in keyed if kf[0] is not None), key=lambda kf: kf[0],
-                    reverse=descending)
-    return [f for _, f in filled] + [f for k, f in keyed if k is None]
+STATUS_FIELDS = (("cyn_statut", QMetaType.Type.QString),
+                 ("cyn_aire_av", QMetaType.Type.Double),
+                 ("cyn_aire_ap", QMetaType.Type.Double))
+AREA_TOLERANCE_M2 = 0.001
 
 
 def _as_multipolygon(geom: QgsGeometry) -> QgsGeometry | None:
@@ -160,79 +167,165 @@ def _as_multipolygon(geom: QgsGeometry) -> QgsGeometry | None:
     return None if poly is None or poly.isNull() or poly.isEmpty() else poly
 
 
+def _closer_parts(fid: int, neighbours: list[int], geoms: dict[int, QgsGeometry],
+                  centres: dict[int, QgsPointXY], ranks: dict[int, int],
+                  span: float) -> list[QgsGeometry]:
+    """split_equally : parties des voisins plus proches de LEUR centroïde que de celui de fid.
+
+    Un point disputé revient à l'entité qui le couvre et dont le centroïde est le plus proche
+    (Voronoï restreint aux entités qui le couvrent) : partage sans trou ni recouvrement.
+    """
+    me = centres[fid]
+    parts = []
+    for other in neighbours:
+        there = centres[other]
+        try:
+            corners = half_plane_corners(there.x(), there.y(), me.x(), me.y(), span)
+        except ValueError:  # centroïdes confondus : départage par ordre de lecture
+            if ranks[other] < ranks[fid]:
+                parts.append(geoms[other])
+            continue
+        half = QgsGeometry.fromPolygonXY([[QgsPointXY(x, y) for x, y in corners]])
+        parts.append(geoms[other].intersection(half))
+    return parts
+
+
 @tool(level=Level.CREATE, params={
     "layer_id": Param("string", "Couche de polygones (layer_id)."),
-    "priority_field": Param("string", "Champ de priorité : l'entité la plus prioritaire garde la "
-                            "zone commune. Défaut : ordre des fid (la première l'emporte).",
-                            required=False),
-    "descending": Param("boolean", "Priorité aux valeurs les plus grandes de priority_field.",
-                        required=False, default=True),
+    "strategy": Param("string", "Qui garde la zone commune : priority_field (selon un champ), "
+                      "keep_largest (la plus grande entité), keep_oldest (plus petite valeur de "
+                      "priority_field, ex. date ; sans champ : ordre de lecture), split_equally "
+                      "(partage selon la médiatrice entre centroïdes).", required=False,
+                      default="keep_largest", enum=STRATEGIES),
+    "priority_field": Param("string", "Champ départageant (obligatoire pour priority_field). "
+                            "Valeurs nulles = priorité la plus faible.", required=False),
+    "priority_order": Param("string", "priority_field : asc = la plus petite valeur gagne, "
+                            "desc = la plus grande.", required=False, default="asc", enum=ORDERS),
     "output_name": OUTPUT_NAME,
 })
-def resolve_overlaps(layer_id: str, priority_field: str | None, descending: bool,
-                     output_name: str | None) -> ToolResult:
+def resolve_overlaps(layer_id: str, strategy: str, priority_field: str | None,
+                     priority_order: str, output_name: str | None) -> ToolResult:
     """Produit une copie de la couche SANS chevauchements : chaque zone couverte par plusieurs
-    polygones est attribuée à un seul, le plus prioritaire ; les autres sont découpés. Attributs
-    conservés, couche d'origine intacte. Les entités entièrement recouvertes disparaissent
-    (fid listés dans removed_fids). Utilise detect_overlaps avant pour mesurer l'enjeu."""
+    polygones est attribuée à un seul selon la stratégie ; les autres sont découpés. Attributs
+    conservés + champs de contrôle cyn_statut (unchanged/clipped), cyn_aire_av et cyn_aire_ap
+    (m², ellipsoïdal). Couche d'origine intacte. Les entités entièrement recouvertes disparaissent
+    (fid dans removed_fids). Utilise detect_overlaps avant pour mesurer l'enjeu."""
     layer = get_vector_layer(layer_id)
     if geometry_kind(layer) != "polygon":
         raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'est pas une couche de "
                         "polygones.")
+    if needs_priority_field(strategy) and not priority_field:
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        "La stratégie priority_field exige le paramètre priority_field.")
     field = require_field(layer, priority_field) if priority_field else None
     da = distance_area(layer.crs(), "ellipsoidal")
-    result = QgsMemoryProviderUtils.createMemoryLayer(
-        "resolve_overlaps", layer.fields(), QgsWkbTypes.multiType(layer.wkbType()), layer.crs())
 
+    # 1. Lecture : géométries (réparées si besoin), index spatial, enregistrements de rang
+    features: dict[int, QgsFeature] = {}
+    geoms: dict[int, QgsGeometry] = {}
+    records: list[dict[str, Any]] = []
     index = QgsSpatialIndex()
-    placed: dict[int, QgsGeometry] = {}
-    out: list[QgsFeature] = []
-    removed: list[int] = []
-    failed: list[int] = []
-    trimmed = repaired = 0
-    removed_area = 0.0
-    for feature in _priority_order(list(layer.getFeatures()), field, descending):
+    repaired = 0
+    for order, feature in enumerate(layer.getFeatures()):
         geom = feature.geometry()
         if geom.isNull() or geom.isEmpty():
             continue
         if not geom.isGeosValid():
             geom = geom.makeValid()
             repaired += 1
-        candidates = [placed[i] for i in index.intersects(geom.boundingBox())]
-        blockers = [g for g in candidates if g.intersects(geom)]
+        fid = feature.id()
+        features[fid], geoms[fid] = feature, geom
+        index.addFeature(fid, geom.boundingBox())
+        records.append({"id": fid, "order": order, "area": area_m2(da, geom),
+                        "value": group_key(feature[field]) if field else None})
+    if not records:
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} ne contient aucune géométrie.")
+    ranks = rank_records(records, strategy, priority_order)
+    area_before = {r["id"]: r["area"] for r in records}
+    read_order = {r["id"]: r["order"] for r in records}
+
+    split = strategy == "split_equally"
+    if split:
+        centres = {fid: g.centroid().asPoint() for fid, g in geoms.items()}
+        extent = layer.extent()
+        span = max(extent.width() + extent.height(), 1.0) * 4.0
+
+    # 2. Découpe, de la plus prioritaire à la moins prioritaire
+    fields = QgsFields(layer.fields())
+    for name, kind in STATUS_FIELDS:
+        if fields.lookupField(name) < 0:
+            fields.append(QgsField(name, kind))
+    extra = [None] * (fields.count() - layer.fields().count())
+    result = QgsMemoryProviderUtils.createMemoryLayer(
+        "resolve_overlaps", fields, QgsWkbTypes.multiType(layer.wkbType()), layer.crs())
+
+    placed: dict[int, QgsGeometry] = {}
+    out: list[tuple[int, QgsFeature]] = []
+    entries: list[dict[str, Any]] = []
+    removed: list[int] = []
+    failed: list[int] = []
+    for fid in sorted(geoms, key=ranks.__getitem__):
+        geom = geoms[fid]
+        neighbours = [n for n in index.intersects(geom.boundingBox())
+                      if n != fid and geoms[n].intersects(geom)]
+        if split:
+            blockers = _closer_parts(fid, neighbours, geoms, centres, ranks, span)
+        else:  # les voisins déjà placés sont, par construction, plus prioritaires
+            blockers = [placed[n] for n in neighbours if n in placed]
+        blockers = [b for b in blockers if not b.isNull() and not b.isEmpty()]
         if blockers:
             cut = geom.difference(QgsGeometry.unaryUnion(blockers))
             if cut.isNull():  # échec GEOS
-                failed.append(feature.id())
+                failed.append(fid)
                 continue
-            removed_area += area_m2(da, geom) - (area_m2(da, cut) if not cut.isEmpty() else 0)
             geom = cut
         poly = _as_multipolygon(geom)
-        if poly is None:
-            removed.append(feature.id())
+        after = area_m2(da, poly) if poly is not None else 0.0
+        if poly is None or after <= AREA_TOLERANCE_M2:
+            status = "removed"
+            removed.append(fid)
+        elif area_before[fid] - after > AREA_TOLERANCE_M2:
+            status = "clipped"
+        else:
+            status = "unchanged"
+        entries.append({"id": fid, "status": status, "area_before": area_before[fid],
+                        "area_after": after})
+        if status == "removed":
             continue
-        trimmed += bool(blockers)
-        placed[feature.id()] = poly
-        index.addFeature(feature.id(), poly.boundingBox())
-        new = QgsFeature(feature)
+        placed[fid] = poly
+        new = QgsFeature(fields)
+        new.setAttributes(features[fid].attributes() + extra)
         new.setGeometry(poly)
-        out.append(new)
-    if not result.dataProvider().addFeatures(out):
+        new["cyn_statut"] = status
+        new["cyn_aire_av"] = round(area_before[fid], 3)
+        new["cyn_aire_ap"] = round(after, 3)
+        out.append((read_order[fid], new))
+    out.sort(key=lambda item: item[0])
+    if not result.dataProvider().addFeatures([f for _, f in out]):
         raise ToolError(ErrorCode.INTERNAL_ERROR, "Copie des entités impossible.",
                         {"error": result.dataProvider().lastError()})
 
     tool_result = run_to_project("native:savefeatures", {"INPUT": result},
                                  output_name or f"sans_chevauchement_{layer.name()}")
-    stats: dict[str, Any] = {
-        "features_out": len(out), "trimmed": trimmed, "removed_fids": removed[:200],
-        "removed_count": len(removed), "repaired_inputs": repaired,
-        "overlap_area_removed_m2": round(removed_area, 2),
-        "priority": f"{field} {'desc' if descending else 'asc'}" if field else "fid",
-    }
-    tool_result.data.update(stats)
+    summary = summarize_resolution(entries)
+    tool_result.data.update({
+        "strategy": strategy,
+        "priority": f"{field} {priority_order}" if field else None,
+        "features_in": summary["features_in"],
+        "features_out": summary["features_out"],
+        "clipped": summary["features_clipped"],
+        "removed_count": summary["features_removed"],
+        "removed_fids": removed[:200],
+        "overlap_area_removed_m2": round(summary["area_removed"], 2),
+        "repaired_inputs": repaired,
+    })
     if failed:
         tool_result.warnings.append(f"{len(failed)} entité(s) non traitées (échec GEOS), "
                                     f"absentes de la sortie : fid {failed[:50]}.")
     if repaired:
-        tool_result.warnings.append(f"{repaired} géométrie(s) invalide(s) réparée(s) à la volée.")
+        tool_result.warnings.append(f"{repaired} géométrie(s) invalide(s) réparée(s) à la volée "
+                                    "(fix_geometries pour un nettoyage durable).")
+    if field is None and strategy == "keep_oldest":
+        tool_result.warnings.append("keep_oldest sans priority_field : l'ordre de lecture des "
+                                    "entités sert de critère d'ancienneté.")
     return tool_result
