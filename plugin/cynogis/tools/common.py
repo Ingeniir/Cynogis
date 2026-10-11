@@ -15,6 +15,7 @@ from qgis.core import (
     QgsExpressionContext,
     QgsExpressionContextUtils,
     QgsFeatureRequest,
+    QgsField,
     QgsGeometry,
     QgsMapLayer,
     QgsProject,
@@ -23,11 +24,12 @@ from qgis.core import (
     QgsRectangle,
     QgsUnitTypes,
     QgsVectorLayer,
+    QgsWkbTypes,
 )
-from qgis.PyQt.QtCore import Qt
-
+from qgis.PyQt.QtCore import QMetaType, Qt
 
 from ..core.errors import ErrorCode, ToolError
+from ..core.fields import resolve_type
 from ..core.territory import UNKNOWN, detect_territory
 
 WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -248,3 +250,138 @@ def length_m(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
 
 def perimeter_m(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
     return da.convertLengthMeasurement(da.measurePerimeter(geometry), Qgis.DistanceUnit.Meters)
+
+# --- Édition et champs -----------------------------------------------------
+_META_TYPES = {
+    "QString": QMetaType.Type.QString,
+    "int": QMetaType.Type.Int,
+    "qlonglong": QMetaType.Type.LongLong,
+    "double": QMetaType.Type.Double,
+    "bool": QMetaType.Type.Bool,
+    "QDate": QMetaType.Type.QDate,
+    "QDateTime": QMetaType.Type.QDateTime,
+}
+
+
+def crs_from_text(value: str) -> QgsCoordinateReferenceSystem:
+    """SCR à partir d'un code : « EPSG:2975 », « 2975 »… INVALID_PARAMS si inconnu."""
+    text = str(value).strip()
+    crs = QgsCoordinateReferenceSystem(f"EPSG:{text}" if text.isdigit() else text)
+    if not crs.isValid():
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"Système de coordonnées inconnu : {value}")
+    return crs
+
+
+def make_field(name: str, type_name: str, length: int = 0, precision: int = 0) -> QgsField:
+    """QgsField à partir d'un type Cynogis (QMetaType : QGIS >= 3.38 et 4.x)."""
+    try:
+        spec = resolve_type(type_name)
+    except ValueError as exc:
+        raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
+    return QgsField(name, _META_TYPES[spec.qt_name], "", int(length) or spec.default_length,
+                    int(precision) or spec.default_precision)
+
+
+def field_type_name(field: QgsField) -> str:
+    """Type Cynogis correspondant à un champ existant ('string' par défaut)."""
+    type_name = field.typeName().lower()
+    if "int64" in type_name or "long" in type_name:
+        return "long"
+    if "int" in type_name:
+        return "integer"
+    if any(token in type_name for token in ("real", "double", "float", "numeric", "decimal")):
+        return "real"
+    if "datetime" in type_name or "timestamp" in type_name:
+        return "datetime"
+    if "date" in type_name:
+        return "date"
+    if "bool" in type_name:
+        return "boolean"
+    return "string"
+
+
+def layer_field_types(layer: QgsVectorLayer) -> dict[str, str]:
+    """Table {nom de champ: type Cynogis} d'une couche."""
+    return {field.name(): field_type_name(field) for field in layer.fields()}
+
+
+def is_shapefile(layer: QgsVectorLayer) -> bool:
+    return "shapefile" in (layer.storageType() or "").lower()
+
+
+def begin_edit(layer: QgsVectorLayer, capability: Any, action: str) -> None:
+    """Contrôle que la source accepte l'opération puis ouvre le tampon d'édition si besoin."""
+    if not layer.dataProvider().capabilities() & capability:
+        raise ToolError(ErrorCode.READ_ONLY,
+                        f"« {layer.name()} » n'autorise pas {action} (service web, fichier "
+                        "verrouillé…). Exporte-la d'abord avec export_layer.")
+    if not layer.isEditable() and not layer.startEditing():
+        raise ToolError(ErrorCode.EDIT_FAILED,
+                        f"Impossible d'ouvrir l'édition sur « {layer.name()} » : fichier "
+                        "peut-être ouvert dans un autre logiciel.")
+
+
+def geometry_from_wkt(wkt: str, layer: QgsVectorLayer, source_crs: str | None = None
+                      ) -> QgsGeometry:
+    """Géométrie WKT contrôlée : reprojetée vers la couche, bon type, multi si besoin, valide."""
+    geometry = QgsGeometry.fromWkt(str(wkt))
+    if geometry.isNull():
+        raise ToolError(ErrorCode.INVALID_GEOMETRY,
+                        f"WKT illisible : {str(wkt)[:80]}… Attendu par ex. "
+                        "POLYGON((x1 y1, x2 y2, x3 y3, x1 y1)).")
+    if source_crs:
+        origin = crs_from_text(source_crs)
+        if origin != layer.crs():
+            transform = QgsCoordinateTransform(origin, layer.crs(), QgsProject.instance())
+            try:
+                failed = geometry.transform(transform) != Qgis.GeometryOperationResult.Success
+            except QgsCsException:
+                failed = True
+            if failed:
+                raise ToolError(ErrorCode.INVALID_GEOMETRY,
+                                f"Reprojection {origin.authid()} → {layer.crs().authid()} "
+                                "impossible.")
+    expected = layer.geometryType()
+    if geometry.type() != expected:
+        raise ToolError(ErrorCode.INVALID_GEOMETRY,
+                        f"La couche attend des géométries {_GEOMETRY_NAMES.get(expected, '?')}, "
+                        f"reçu {_GEOMETRY_NAMES.get(geometry.type(), '?')}.")
+    if QgsWkbTypes.isMultiType(layer.wkbType()):
+        geometry.convertToMultiType()
+    if not geometry.isGeosValid():
+        fixed = geometry.makeValid()
+        if not fixed.isEmpty():
+            geometry = fixed
+    return geometry
+
+
+def select_ids(layer: QgsVectorLayer, expression: str | None, feature_ids: list | None = None,
+               limit: int | None = None) -> list[int]:
+    """fid visés par une liste d'identifiants (tous doivent exister) ou par une expression.
+
+    Sans l'un ni l'autre : toute la couche. Avec limit, s'arrête à limit + 1 entités pour que
+    l'appelant puisse détecter le dépassement sans tout parcourir.
+    """
+    if feature_ids:
+        wanted = list(dict.fromkeys(int(value) for value in feature_ids))
+        request = QgsFeatureRequest().setFilterFids(wanted)
+        request.setNoAttributes()
+        request.setFlags(Qgis.FeatureRequestFlag.NoGeometry)
+        existing = {feature.id() for feature in layer.getFeatures(request)}
+        missing = [fid for fid in wanted if fid not in existing]
+        if missing:
+            raise ToolError(ErrorCode.INVALID_PARAMS,
+                            f"Entités introuvables dans « {layer.name()} » : {missing[:10]}")
+        return wanted
+    ids: list[int] = []
+    for feature in layer.getFeatures(feature_request(layer, expression, [], False)):
+        ids.append(feature.id())
+        if limit is not None and len(ids) > limit:
+            break
+    return ids
+
+
+def refresh_layer(layer: QgsVectorLayer) -> None:
+    """Rafraîchit l'affichage après modification du tampon."""
+    layer.updateExtents()
+    layer.triggerRepaint()

@@ -47,6 +47,11 @@ def add_to_project(path: Path, name: str, raster: bool = False) -> QgsMapLayer:
     layer = QgsRasterLayer(str(path), name) if raster else QgsVectorLayer(str(path), name, "ogr")
     if not layer.isValid():
         raise ToolError(ErrorCode.PROCESSING_FAILED, f"Sortie illisible : {path}")
+    return add_to_group(layer)
+
+
+def add_to_group(layer: QgsMapLayer) -> QgsMapLayer:
+    """Ajoute une couche au projet, en tête du groupe « Cynogis » (créé au besoin)."""
     project = QgsProject.instance()
     root = project.layerTreeRoot()
     group = root.findGroup(GROUP) or root.insertGroup(0, GROUP)
