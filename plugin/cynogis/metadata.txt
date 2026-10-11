@@ -1,6 +1,6 @@
 [general]
 name=Cynogis Réunion-Mayotte
-qgisMinimumVersion=3.12
+qgisMinimumVersion=3.38
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Pilotage de QGIS par une IA via protocole MCP
