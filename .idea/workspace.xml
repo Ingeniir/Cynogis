@@ -6,14 +6,8 @@
   <component name="ChangeListManager">
     <list default="true" id="779a0765-2b87-4638-9997-bd8e8a9936c3" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/CLAUDE.md" beforeDir="false" afterPath="$PROJECT_DIR$/CLAUDE.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/plugin/cynogis/core/errors.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/core/errors.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/plugin/cynogis/core/naming.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/core/naming.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/algorithms.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/tools/algorithms.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/common.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/tools/common.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/geoprocessing.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/tools/geoprocessing.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/overlaps.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/tools/overlaps.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/unit/test_naming.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/unit/test_naming.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/plugin/cynogis/ui/confirm.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/ui/confirm.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -87,7 +81,7 @@
       <updated>1791551528772</updated>
       <workItem from="1791551714164" duration="14792000" />
       <workItem from="1791631678764" duration="1281000" />
-      <workItem from="1791654362102" duration="8219000" />
+      <workItem from="1791654362102" duration="10645000" />
     </task>
     <servers />
   </component>
