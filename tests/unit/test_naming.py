@@ -1,4 +1,4 @@
-from cynogis.core.naming import clean_name, unique_path
+from cynogis.core.naming import clean_name, normalize, unique_path
 
 
 def test_clean_name():
@@ -18,3 +18,7 @@ def test_unique_path_never_overwrites(tmp_path):
     assert second.name == "buffer_2.gpkg"
     second.touch()
     assert unique_path(tmp_path, "buffer", ".gpkg").name == "buffer_3.gpkg"
+
+
+def test_normalize():
+    assert normalize("  Forêt   d'ÉTANG ") == "foret d'etang"

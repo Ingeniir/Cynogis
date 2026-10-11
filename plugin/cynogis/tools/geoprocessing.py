@@ -15,7 +15,8 @@ OUTPUT_NAME = Param("string", "Nom de la couche produite (défaut : opération_c
 LOCATION_PREDICATES = ("intersects", "contains", "disjoint", "equals", "touches", "overlaps",
                        "within", "crosses")  # ordre = indices de native:extractbylocation
 OVERLAYS = {"intersection": "native:intersection", "union": "native:union",
-            "difference": "native:difference", "clip": "native:clip"}
+            "difference": "native:difference",
+            "symmetric_difference": "native:symmetricaldifference", "clip": "native:clip"}
 
 
 def _name(output_name: str | None, operation: str, layer_name: str) -> str:
@@ -133,7 +134,8 @@ def extract(layer_id: str, expression: str | None, location_layer_id: str | None
     "overlay_layer_id": Param("string", "Couche de superposition (layer_id)."),
     "operation": Param("string", "intersection (zones communes, attributs des deux couches), "
                        "union (tout, découpé aux limites), difference (entrée moins "
-                       "superposition), clip (entrée découpée par l'emprise de la "
+                       "superposition), symmetric_difference (zones couvertes par "
+                       "une seule des deux couches), clip (entrée découpée par l'emprise de la "
                        "superposition, attributs de l'entrée seulement).",
                        enum=tuple(OVERLAYS)),
     "output_name": OUTPUT_NAME,
