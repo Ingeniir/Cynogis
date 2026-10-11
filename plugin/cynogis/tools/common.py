@@ -226,6 +226,28 @@ def feature_request(layer: QgsVectorLayer, filter_expression: str | None = None,
     return request
 
 
+def iter_geometries(layer: QgsVectorLayer, request: QgsFeatureRequest,
+                    crs: QgsCoordinateReferenceSystem | None = None):
+    """(entité, copie de sa géométrie dans crs) pour chaque entité non vide.
+
+    Les entités impossibles à reprojeter sont ignorées.
+    """
+    transform = None
+    if crs is not None and crs != layer.crs():
+        transform = QgsCoordinateTransform(layer.crs(), crs, QgsProject.instance())
+    for feature in layer.getFeatures(request):
+        geometry = feature.geometry()
+        if geometry.isNull() or geometry.isEmpty():
+            continue
+        geometry = QgsGeometry(geometry)
+        if transform is not None:
+            try:
+                geometry.transform(transform)
+            except QgsCsException:
+                continue
+        yield feature, geometry
+
+
 # --- Mesures ---------------------------------------------------------------
 def distance_area(crs: QgsCoordinateReferenceSystem, method: str = "ellipsoidal") -> QgsDistanceArea:
     """ellipsoidal : mesure sur l'ellipsoïde (GRS80 par défaut, celui du RGR92 et du RGM04).
