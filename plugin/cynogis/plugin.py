@@ -25,6 +25,7 @@ from .tools import (
     layers,
     measures,
     overlaps,
+    proximity,
     shapefiles,
     styling,
     system,
@@ -36,7 +37,8 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path.home() / ".cynogis"
 MENU = "&Cynogis"
 TOOL_MODULES = (system, layers, features, measures, overlaps, geoprocessing, algorithms,
-                editing, shapefiles, coefficients, landscape, terrain, styling, export)
+                editing, shapefiles, coefficients, landscape, terrain, styling, export,
+                proximity)
 logger = logging.getLogger("cynogis")
 
 

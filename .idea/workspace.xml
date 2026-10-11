@@ -5,8 +5,9 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="779a0765-2b87-4638-9997-bd8e8a9936c3" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/plugin/cynogis/plugin.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/plugin.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/coefficients.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/tools/coefficients.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/common.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/tools/common.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -80,7 +81,7 @@
       <updated>1791551528772</updated>
       <workItem from="1791551714164" duration="14792000" />
       <workItem from="1791631678764" duration="1281000" />
-      <workItem from="1791654362102" duration="14528000" />
+      <workItem from="1791654362102" duration="15130000" />
     </task>
     <servers />
   </component>

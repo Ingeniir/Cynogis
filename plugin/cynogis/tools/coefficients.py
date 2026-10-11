@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from qgis.core import QgsCoordinateTransform, QgsGeometry, QgsProject, QgsVectorLayer
+from qgis.core import QgsGeometry, QgsVectorLayer
 
 from ..core import coefficients as formulas
 from ..core import metrics as indices
@@ -18,6 +18,7 @@ from .common import (
     geometry_kind,
     get_vector_layer,
     group_key,
+    iter_geometries,
     perimeter_m,
     require_field,
     to_json_value,
@@ -38,17 +39,7 @@ def _polygon_layer(layer_id: str) -> QgsVectorLayer:
 
 def _geometries(layer: QgsVectorLayer, attributes: list[str], target: QgsVectorLayer):
     """(entité, géométrie dans le SCR de target) pour chaque entité non vide."""
-    transform = None
-    if layer.crs() != target.crs():
-        transform = QgsCoordinateTransform(layer.crs(), target.crs(), QgsProject.instance())
-    for feature in layer.getFeatures(feature_request(layer, None, attributes)):
-        geometry = feature.geometry()
-        if geometry.isNull() or geometry.isEmpty():
-            continue
-        if transform is not None:
-            geometry = QgsGeometry(geometry)
-            geometry.transform(transform)
-        yield feature, geometry
+    return iter_geometries(layer, feature_request(layer, None, attributes), target.crs())
 
 
 @tool(level=Level.READ, params={})
