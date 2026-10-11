@@ -7,7 +7,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from qgis.core import Qgis, QgsFeature, QgsProject, QgsVectorDataProvider, QgsVectorLayer
+from qgis.core import (
+    Qgis,
+    QgsCoordinateTransform,
+    QgsCsException,
+    QgsFeature,
+    QgsFeatureRequest,
+    QgsFields,
+    QgsGeometry,
+    QgsGeometrySnapper,
+    QgsMemoryProviderUtils,
+    QgsPointXY,
+    QgsProject,
+    QgsRectangle,
+    QgsVectorDataProvider,
+    QgsVectorLayer,
+    QgsWkbTypes,
+)
 
 from ..core.dispatcher import ToolResult
 from ..core.edits import JOURNAL, MAX_FEATURES_PER_CALL, check_batch_size, describe_summary
@@ -17,13 +33,17 @@ from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..ui.confirm import register_detail_provider
 from .common import (
+    area_m2,
     begin_edit,
+    distance_area,
     feature_request,
     field_type_name,
     geometry_from_wkt,
+    geometry_kind,
     get_vector_layer,
     is_shapefile,
     layer_field_types,
+    length_m,
     make_field,
     prepare_expression,
     refresh_layer,
@@ -31,12 +51,15 @@ from .common import (
     select_ids,
     source_path,
     to_json_value,
+    wkt_to_layer_crs,
 )
 
 LAYER_ID = Param("string", "Couche vecteur (layer_id).")
 OPTIONAL_LAYER_ID = Param("string", "Couche vecteur (layer_id). Absent : toutes les couches en "
                           "cours d'édition.", required=False)
 FIELD_TYPE_NAMES = tuple(FIELD_TYPES)
+GEOMETRY_CRS = Param("string", "SCR des géométries fournies, ex. EPSG:4326. Défaut : celui de "
+                     "la couche.", required=False)
 NEXT_STEP = "request_commit pour enregistrer, rollback_edits pour annuler."
 # QGIS >= 3.40 / 4.x : Qgis.VectorProviderCapability ; avant : QgsVectorDataProvider.Capability
 Caps = getattr(Qgis, "VectorProviderCapability", None) or QgsVectorDataProvider.Capability
@@ -142,8 +165,7 @@ def delete_field(layer_id: str, name: str) -> ToolResult:
     "layer_id": LAYER_ID,
     "features": Param("array", 'Entités à créer : [{"geometry": "WKT", "attributes": '
                       '{"champ": valeur}}]. Attributs absents = NULL.', items="object"),
-    "geometry_crs": Param("string", "SCR des géométries fournies, ex. EPSG:4326. Défaut : "
-                          "celui de la couche.", required=False),
+    "geometry_crs": GEOMETRY_CRS,
 })
 def add_features(layer_id: str, features: list, geometry_crs: str | None) -> ToolResult:
     """Ajoute des entités (géométrie WKT + attributs) dans le tampon d'édition. Les valeurs
@@ -327,6 +349,338 @@ def delete_features(layer_id: str, expression: str | None, feature_ids: list | N
                        "next_step": NEXT_STEP}, warnings)
 
 
+# --- Géométries ---------------------------------------------------------------------------
+SNAP_MODES = {"vertices": QgsGeometrySnapper.SnapMode.PreferNodes,
+              "closest": QgsGeometrySnapper.SnapMode.PreferClosest}
+SNAP_LAYERS = Param("array", "Couches (layer_id) auxquelles accrocher les sommets, ex. "
+                    "parcelles voisines. La couche éditée peut en faire partie : les entités "
+                    "modifiées sont alors exclues de la référence. Absent : pas d'accrochage.",
+                    required=False, items="string")
+SNAP_TOLERANCE = Param("number", "Distance d'accrochage en mètres (couche en SCR projeté).",
+                       required=False, default=0.5, minimum=0.001, maximum=50)
+SNAP_MODE = Param("string", "vertices : sommets voisins d'abord (limites communes propres) ; "
+                  "closest : point le plus proche, sommet ou segment.", required=False,
+                  default="vertices", enum=tuple(SNAP_MODES))
+STALE_FIELDS = ("Les champs de surface ou de longueur déjà calculés (ex. pays_surf) ne sont pas "
+                "mis à jour : relance calculate_field si besoin.")
+
+
+def _measure(layer: QgsVectorLayer, geometry: QgsGeometry) -> float | None:
+    """Surface (m²) ou longueur (m) ellipsoïdale, None pour des points ou sans SCR."""
+    kind = geometry_kind(layer)
+    if kind not in ("polygon", "line") or not layer.crs().isValid():
+        return None
+    da = distance_area(layer.crs())
+    return round(area_m2(da, geometry) if kind == "polygon" else length_m(da, geometry), 2)
+
+
+def _conform(geometry: QgsGeometry, layer: QgsVectorLayer) -> QgsGeometry:
+    """Géométrie valide, du type et de la multiplicité de la couche, sinon INVALID_GEOMETRY."""
+    if not geometry.isGeosValid():
+        geometry = geometry.makeValid()
+    converted = geometry.convertToType(layer.geometryType(),
+                                       QgsWkbTypes.isMultiType(layer.wkbType()))
+    if converted is None or converted.isNull() or converted.isEmpty():
+        raise ToolError(ErrorCode.INVALID_GEOMETRY,
+                        f"Résultat incompatible avec « {layer.name()} » "
+                        f"({QgsWkbTypes.displayString(layer.wkbType())}) : géométrie vide, "
+                        "d'un autre type, ou en plusieurs parties dans une couche à parties "
+                        "simples.")
+    return converted
+
+
+def _geometries(layer: QgsVectorLayer, ids: list[int]) -> dict[int, QgsGeometry]:
+    """Copies des géométries (état du tampon d'édition compris), sans les géométries vides."""
+    request = QgsFeatureRequest().setFilterFids(ids)
+    request.setNoAttributes()
+    return {f.id(): QgsGeometry(f.geometry()) for f in layer.getFeatures(request)
+            if not f.geometry().isNull() and not f.geometry().isEmpty()}
+
+
+def _reference_subset(reference: QgsVectorLayer, layer: QgsVectorLayer, area: QgsRectangle,
+                      exclude: set[int]) -> QgsVectorLayer:
+    """Entités de reference proches de area, dans le SCR de layer, en couche mémoire.
+
+    QgsGeometrySnapper indexe toute sa source : un extrait local évite d'indexer une couche
+    entière à chaque appel.
+    """
+    to_layer = None
+    request_area = area
+    if reference.crs() != layer.crs():
+        to_layer = QgsCoordinateTransform(reference.crs(), layer.crs(), QgsProject.instance())
+        request_area = to_layer.transformBoundingBox(area, Qgis.TransformDirection.Reverse)
+    request = QgsFeatureRequest().setFilterRect(request_area)
+    request.setNoAttributes()
+    subset = QgsMemoryProviderUtils.createMemoryLayer(
+        "snap_reference", QgsFields(), QgsWkbTypes.multiType(reference.wkbType()), layer.crs())
+    features = []
+    for feature in reference.getFeatures(request):
+        geometry = QgsGeometry(feature.geometry())
+        if feature.id() in exclude or geometry.isNull() or geometry.isEmpty():
+            continue
+        if to_layer is not None:
+            try:
+                geometry.transform(to_layer)
+            except QgsCsException:
+                continue
+        geometry.convertToMultiType()
+        copy = QgsFeature()
+        copy.setGeometry(geometry)
+        features.append(copy)
+    subset.dataProvider().addFeatures(features)
+    return subset
+
+
+def _snap(layer: QgsVectorLayer, geometries: dict[int, QgsGeometry],
+          reference_ids: list | None, tolerance: float, mode: str) -> set[int]:
+    """Accroche geometries (remplacées sur place) aux couches de référence ; renvoie les fid
+    effectivement modifiés."""
+    if not reference_ids or not geometries:
+        return set()
+    if layer.crs().isGeographic():
+        raise ToolError(ErrorCode.CRS_GEOGRAPHIC,
+                        f"{layer.name()} est en degrés : la tolérance d'accrochage en mètres "
+                        "exige un SCR projeté (reproject_layer).")
+    area = QgsRectangle()
+    for geometry in geometries.values():
+        area.combineExtentWith(geometry.boundingBox())
+    area.grow(tolerance)
+    changed: set[int] = set()
+    for reference_id in dict.fromkeys(reference_ids):
+        reference = get_vector_layer(reference_id)
+        exclude = set(geometries) if reference.id() == layer.id() else set()
+        subset = _reference_subset(reference, layer, area, exclude)
+        if subset.featureCount() == 0:
+            continue
+        snapper = QgsGeometrySnapper(subset)
+        for fid, geometry in geometries.items():
+            snapped = snapper.snapGeometry(geometry, tolerance, SNAP_MODES[mode])
+            if not snapped.isNull() and not snapped.equals(geometry):
+                geometries[fid] = snapped
+                changed.add(fid)
+    return changed
+
+
+def _change_geometries(layer: QgsVectorLayer, geometries: dict[int, QgsGeometry]) -> None:
+    begin_edit(layer, Caps.ChangeGeometries, "la modification de géométries")
+    for fid, geometry in geometries.items():
+        if not layer.changeGeometry(fid, geometry):
+            raise ToolError(ErrorCode.EDIT_FAILED, f"Géométrie de l'entité {fid} refusée par la "
+                            "couche (rollback_edits pour annuler les modifications partielles).")
+    refresh_layer(layer)
+
+
+@tool(level=Level.MODIFY, params={
+    "layer_id": LAYER_ID,
+    "feature_id": Param("integer", "fid de l'entité à modifier."),
+    "geometry": Param("string", "Nouvelle géométrie en WKT (même type que la couche)."),
+    "geometry_crs": GEOMETRY_CRS,
+    "snap_layer_ids": SNAP_LAYERS,
+    "snap_tolerance_m": SNAP_TOLERANCE,
+    "snap_mode": SNAP_MODE,
+})
+def update_geometry(layer_id: str, feature_id: int, geometry: str, geometry_crs: str | None,
+                    snap_layer_ids: list | None, snap_tolerance_m: float,
+                    snap_mode: str) -> ToolResult:
+    """Remplace la géométrie d'une entité (tampon d'édition), attributs inchangés. Avec
+    snap_layer_ids, les sommets proches des couches voisines y sont accrochés : pas de trou ni
+    de chevauchement le long des limites communes."""
+    layer = get_vector_layer(layer_id)
+    before = _geometries(layer, select_ids(layer, None, [feature_id])).get(feature_id)
+    new = {feature_id: geometry_from_wkt(geometry, layer, geometry_crs)}
+    snapped = _snap(layer, new, snap_layer_ids, snap_tolerance_m, snap_mode)
+    final = {feature_id: _conform(new[feature_id], layer)}
+    _change_geometries(layer, final)
+    pending = _record(layer, "update_geometry", 1, f"fid {feature_id}")
+    return ToolResult({"layer": layer.name(), "feature_id": feature_id,
+                       "snapped": bool(snapped),
+                       "measure_before": _measure(layer, before) if before else None,
+                       "measure_after": _measure(layer, final[feature_id]),
+                       "pending_edits": pending, "next_step": NEXT_STEP}, [STALE_FIELDS])
+
+
+@tool(level=Level.MODIFY, params={
+    "layer_id": LAYER_ID,
+    "dx_m": Param("number", "Décalage vers l'est en mètres (négatif : vers l'ouest)."),
+    "dy_m": Param("number", "Décalage vers le nord en mètres (négatif : vers le sud)."),
+    "expression": Param("string", "Entités à déplacer, par expression QGIS.", required=False),
+    "feature_ids": Param("array", "Entités à déplacer, par fid.", required=False,
+                         items="integer"),
+    "max_features": Param("integer", "Refus au-delà de ce nombre d'entités.", required=False,
+                          default=200, minimum=1, maximum=MAX_FEATURES_PER_CALL),
+    "snap_layer_ids": SNAP_LAYERS,
+    "snap_tolerance_m": SNAP_TOLERANCE,
+    "snap_mode": SNAP_MODE,
+})
+def move_features(layer_id: str, dx_m: float, dy_m: float, expression: str | None,
+                  feature_ids: list | None, max_features: int, snap_layer_ids: list | None,
+                  snap_tolerance_m: float, snap_mode: str) -> ToolResult:
+    """Déplace des entités d'un décalage en mètres (tampon d'édition), ex. recaler un levé sur
+    le cadastre. Filtre obligatoire. Accrochage optionnel aux couches voisines après le
+    déplacement."""
+    layer = get_vector_layer(layer_id)
+    if not expression and not feature_ids:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Indique expression ou feature_ids.")
+    if layer.crs().isGeographic():
+        raise ToolError(ErrorCode.CRS_GEOGRAPHIC, f"{layer.name()} est en degrés : un décalage "
+                        "en mètres exige un SCR projeté (reproject_layer).")
+    if dx_m == 0 and dy_m == 0 and not snap_layer_ids:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Décalage nul et pas d'accrochage : rien à "
+                        "faire.")
+    ids = select_ids(layer, expression, feature_ids, limit=max_features)
+    _check_count(ids, max_features)
+    geometries = _geometries(layer, ids)
+    if not geometries:
+        return ToolResult({"layer": layer.name(), "moved": 0},
+                          ["Aucune entité (avec géométrie) ne correspond : rien n'a bougé."])
+    for geometry in geometries.values():
+        geometry.translate(dx_m, dy_m)
+    snapped = _snap(layer, geometries, snap_layer_ids, snap_tolerance_m, snap_mode)
+    _change_geometries(layer, {fid: _conform(g, layer) for fid, g in geometries.items()})
+    pending = _record(layer, "move_features", len(geometries), f"dx={dx_m:g} m, dy={dy_m:g} m")
+    return ToolResult({"layer": layer.name(), "moved": len(geometries), "dx_m": dx_m,
+                       "dy_m": dy_m, "snapped": len(snapped), "pending_edits": pending,
+                       "next_step": NEXT_STEP})
+
+
+@tool(level=Level.MODIFY, params={
+    "layer_id": LAYER_ID,
+    "feature_id": Param("integer", "fid de l'entité (polygone ou ligne) à découper."),
+    "split_line": Param("string", "Ligne de découpe en WKT, ex. LINESTRING(x1 y1, x2 y2) ; elle "
+                        "doit traverser l'entité de part en part."),
+    "geometry_crs": GEOMETRY_CRS,
+})
+def split_feature(layer_id: str, feature_id: int, split_line: str,
+                  geometry_crs: str | None) -> ToolResult:
+    """Découpe une entité par une ligne (tampon d'édition) : la première partie garde le fid,
+    les autres deviennent de nouvelles entités aux mêmes attributs (identifiant de la source
+    remis à NULL). Seule l'entité désignée est découpée, jamais ses voisines."""
+    layer = get_vector_layer(layer_id)
+    if geometry_kind(layer) not in ("polygon", "line"):
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} : seuls les polygones et les "
+                        "lignes se découpent.")
+    line = wkt_to_layer_crs(split_line, layer, geometry_crs)
+    if line.type() != Qgis.GeometryType.Line or line.isMultipart():
+        raise ToolError(ErrorCode.INVALID_GEOMETRY, "split_line doit être une LINESTRING simple.")
+    points = [QgsPointXY(vertex.x(), vertex.y()) for vertex in line.vertices()]
+    select_ids(layer, None, [feature_id])
+    feature = layer.getFeature(feature_id)
+    geometry = QgsGeometry(feature.geometry())
+    outcome, parts, _ = geometry.splitGeometry(points, False)
+    if outcome == Qgis.GeometryOperationResult.NothingHappened or not parts:
+        return ToolResult({"layer": layer.name(), "feature_id": feature_id, "parts": 1},
+                          ["La ligne ne traverse pas l'entité de part en part : rien n'a été "
+                           "découpé."])
+    if outcome != Qgis.GeometryOperationResult.Success:
+        raise ToolError(ErrorCode.INVALID_GEOMETRY, f"Découpe impossible ({outcome}) : "
+                        "géométrie invalide ? (fix_geometries)")
+    pieces = [_conform(piece, layer) for piece in (geometry, *parts)]
+
+    attributes = feature.attributes()
+    for index in layer.dataProvider().pkAttributeIndexes():  # ex. fid d'un GeoPackage
+        attributes[index] = None
+    new_features = []
+    for piece in pieces[1:]:
+        new = QgsFeature(layer.fields())
+        new.setAttributes(list(attributes))
+        new.setGeometry(piece)
+        new_features.append(new)
+    _change_geometries(layer, {feature_id: pieces[0]})
+    begin_edit(layer, Caps.AddFeatures, "l'ajout d'entités")
+    if not layer.addFeatures(new_features):
+        raise ToolError(ErrorCode.EDIT_FAILED, "Parties découpées refusées par la couche "
+                        "(rollback_edits pour annuler).")
+    refresh_layer(layer)
+    pending = _record(layer, "split_feature", 1, f"fid {feature_id} → {len(pieces)} parties")
+    return ToolResult({"layer": layer.name(), "feature_id": feature_id, "parts": len(pieces),
+                       "measures": [_measure(layer, piece) for piece in pieces],
+                       "pending_edits": pending, "next_step": NEXT_STEP}, [STALE_FIELDS])
+
+
+@tool(level=Level.DESTROY, params={
+    "layer_id": LAYER_ID,
+    "feature_ids": Param("array", "fid des entités à fusionner (au moins 2).", items="integer"),
+    "keep_attributes_from": Param("integer", "fid dont les attributs sont conservés. Défaut : "
+                                  "la plus grande entité (surface ou longueur).",
+                                  required=False),
+})
+def merge_features(layer_id: str, feature_ids: list, keep_attributes_from: int | None
+                   ) -> ToolResult:
+    """Fusionne des entités en une seule (tampon d'édition) : géométries unies, attributs d'une
+    seule entité conservés, les autres supprimées. Confirmation humaine demandée."""
+    layer = get_vector_layer(layer_id)
+    ids = list(dict.fromkeys(int(fid) for fid in feature_ids or []))
+    if len(ids) < 2:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Indique au moins deux fid distincts.")
+    _check_count(ids, MAX_FEATURES_PER_CALL)
+    geometries = _geometries(layer, select_ids(layer, None, ids))
+    if len(geometries) < 2:
+        raise ToolError(ErrorCode.INVALID_GEOMETRY, "Moins de deux entités ont une géométrie.")
+    if keep_attributes_from is not None and keep_attributes_from not in ids:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "keep_attributes_from doit figurer dans "
+                        "feature_ids.")
+    keeper = keep_attributes_from if keep_attributes_from is not None else max(
+        geometries, key=lambda fid: _measure(layer, geometries[fid]) or 0.0)
+
+    merged = QgsGeometry.unaryUnion(list(geometries.values()))
+    if geometry_kind(layer) == "line" and not merged.isNull():
+        merged = merged.mergeLines()  # tronçons bout à bout → une seule ligne
+    if merged.isNull() or merged.isEmpty():
+        raise ToolError(ErrorCode.INVALID_GEOMETRY, "Union impossible : géométries invalides ? "
+                        "(fix_geometries)")
+    final = _conform(merged, layer)
+    others = [fid for fid in ids if fid != keeper]
+
+    _change_geometries(layer, {keeper: final})
+    begin_edit(layer, Caps.DeleteFeatures, "la suppression d'entités")
+    if not layer.deleteFeatures(others):
+        raise ToolError(ErrorCode.EDIT_FAILED, "Suppression des entités fusionnées refusée "
+                        "(rollback_edits pour annuler).")
+    refresh_layer(layer)
+    pending = _record(layer, "merge_features", 1, f"{len(ids)} entités → fid {keeper}")
+    warnings = [STALE_FIELDS]
+    if final.isMultipart() and len(final.asGeometryCollection()) > 1:
+        warnings.append("Entités non contiguës : le résultat est en plusieurs parties.")
+    return ToolResult({"layer": layer.name(), "kept_feature_id": keeper,
+                       "deleted_feature_ids": others, "measure": _measure(layer, final),
+                       "pending_edits": pending, "next_step": NEXT_STEP}, warnings)
+
+
+@tool(level=Level.MODIFY, params={
+    "layer_id": LAYER_ID,
+    "reference_layer_ids": Param("array", "Couches voisines (layer_id) de référence. La couche "
+                                 "éditée peut en faire partie : les entités visées sont alors "
+                                 "accrochées aux autres entités de la couche.", items="string"),
+    "tolerance_m": SNAP_TOLERANCE,
+    "mode": SNAP_MODE,
+    "expression": Param("string", "Entités à accrocher, par expression QGIS.", required=False),
+    "feature_ids": Param("array", "Entités à accrocher, par fid.", required=False,
+                         items="integer"),
+    "max_features": Param("integer", "Refus au-delà de ce nombre d'entités.", required=False,
+                          default=500, minimum=1, maximum=MAX_FEATURES_PER_CALL),
+})
+def snap_features(layer_id: str, reference_layer_ids: list, tolerance_m: float, mode: str,
+                  expression: str | None, feature_ids: list | None,
+                  max_features: int) -> ToolResult:
+    """Accroche les sommets des entités aux couches voisines dans la tolérance (tampon
+    d'édition) : supprime micro-trous et micro-chevauchements le long des limites communes
+    (parcelles, limites communales). Sans filtre : toute la couche, dans max_features."""
+    layer = get_vector_layer(layer_id)
+    ids = select_ids(layer, expression, feature_ids, limit=max_features)
+    _check_count(ids, max_features)
+    geometries = _geometries(layer, ids)
+    snapped = _snap(layer, geometries, reference_layer_ids, tolerance_m, mode)
+    if not snapped:
+        return ToolResult({"layer": layer.name(), "checked": len(geometries), "snapped": 0},
+                          [f"Aucun sommet à moins de {tolerance_m:g} m des couches de "
+                           "référence : rien n'a changé."])
+    _change_geometries(layer, {fid: _conform(geometries[fid], layer) for fid in snapped})
+    pending = _record(layer, "snap_features", len(snapped), f"tolérance {tolerance_m:g} m")
+    return ToolResult({"layer": layer.name(), "checked": len(geometries),
+                       "snapped": len(snapped), "snapped_ids": sorted(snapped)[:200],
+                       "pending_edits": pending, "next_step": NEXT_STEP})
+
+
 # --- Enregistrement et annulation ---------------------------------------------------------
 @tool(level=Level.MODIFY, params={"layer_id": OPTIONAL_LAYER_ID})
 def rollback_edits(layer_id: str | None) -> ToolResult:
@@ -406,3 +760,16 @@ def _delete_field_details(params: dict) -> list[str]:
 register_detail_provider("request_commit", _commit_details)
 register_detail_provider("delete_features", _delete_features_details)
 register_detail_provider("delete_field", _delete_field_details)
+
+
+def _merge_details(params: dict) -> list[str]:
+    layer = get_vector_layer(params["layer_id"])
+    ids = list(dict.fromkeys(params.get("feature_ids") or []))
+    keeper = params.get("keep_attributes_from")
+    return [f"Couche : {layer.name()}", f"{len(ids)} entités fusionnées en une : {ids[:20]}",
+            f"Attributs conservés : fid {keeper}" if keeper is not None
+            else "Attributs conservés : la plus grande entité",
+            f"{max(len(ids) - 1, 0)} entité(s) supprimée(s)."]
+
+
+register_detail_provider("merge_features", _merge_details)

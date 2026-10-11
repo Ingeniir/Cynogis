@@ -328,9 +328,9 @@ def begin_edit(layer: QgsVectorLayer, capability: Any, action: str) -> None:
                         "peut-être ouvert dans un autre logiciel.")
 
 
-def geometry_from_wkt(wkt: str, layer: QgsVectorLayer, source_crs: str | None = None
-                      ) -> QgsGeometry:
-    """Géométrie WKT contrôlée : reprojetée vers la couche, bon type, multi si besoin, valide."""
+def wkt_to_layer_crs(wkt: str, layer: QgsVectorLayer, source_crs: str | None = None
+                     ) -> QgsGeometry:
+    """Géométrie WKT lue puis reprojetée de source_crs vers le SCR de la couche."""
     geometry = QgsGeometry.fromWkt(str(wkt))
     if geometry.isNull():
         raise ToolError(ErrorCode.INVALID_GEOMETRY,
@@ -348,6 +348,13 @@ def geometry_from_wkt(wkt: str, layer: QgsVectorLayer, source_crs: str | None = 
                 raise ToolError(ErrorCode.INVALID_GEOMETRY,
                                 f"Reprojection {origin.authid()} → {layer.crs().authid()} "
                                 "impossible.")
+    return geometry
+
+
+def geometry_from_wkt(wkt: str, layer: QgsVectorLayer, source_crs: str | None = None
+                      ) -> QgsGeometry:
+    """Géométrie WKT contrôlée : reprojetée vers la couche, bon type, multi si besoin, valide."""
+    geometry = wkt_to_layer_crs(wkt, layer, source_crs)
     expected = layer.geometryType()
     if geometry.type() != expected:
         raise ToolError(ErrorCode.INVALID_GEOMETRY,

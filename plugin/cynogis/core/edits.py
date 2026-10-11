@@ -23,6 +23,11 @@ OPERATION_LABELS = {
     "add_field": "champs ajoutés",
     "delete_field": "champs supprimés",
     "delete_features": "entités supprimées",
+    "update_geometry": "géométries remplacées",
+    "move_features": "entités déplacées",
+    "split_feature": "entités découpées",
+    "merge_features": "fusions d'entités",
+    "snap_features": "géométries accrochées",
 }
 
 
