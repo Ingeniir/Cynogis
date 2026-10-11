@@ -18,6 +18,7 @@ from .tools import (
     algorithms,
     coefficients,
     editing,
+    export,
     features,
     geoprocessing,
     landscape,
@@ -25,6 +26,7 @@ from .tools import (
     measures,
     overlaps,
     shapefiles,
+    styling,
     system,
     terrain,
 )
@@ -34,7 +36,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path.home() / ".cynogis"
 MENU = "&Cynogis"
 TOOL_MODULES = (system, layers, features, measures, overlaps, geoprocessing, algorithms,
-                editing, shapefiles, coefficients, landscape, terrain)
+                editing, shapefiles, coefficients, landscape, terrain, styling, export)
 logger = logging.getLogger("cynogis")
 
 
@@ -64,6 +66,8 @@ class CynogisPlugin:
         self._action.toggled.connect(self._on_toggled)
         self.iface.addToolBarIcon(self._action)
         self.iface.addPluginToMenu(MENU, self._action)
+
+        self._load_palettes()
 
     def unload(self) -> None:
         self._stop_bridge()
@@ -118,3 +122,19 @@ class CynogisPlugin:
     def _notify(self, message: str, level: Qgis.MessageLevel) -> None:
         logger.info(message)
         self.iface.messageBar().pushMessage("GeoMCP", message, level=level, duration=5)
+
+    def _load_palettes(self) -> None:
+        """Charge les palettes enregistrées par l'utilisateur, sans bloquer au besoin."""
+        import json
+
+        from .core.palettes import PALETTES_FILE, load_user_palettes
+
+        if not PALETTES_FILE.exists():
+            return
+        try:
+            report = load_user_palettes(json.loads(PALETTES_FILE.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as exc:
+            logger.warning("Palettes utilisateur illisibles (%s) : fichier ignoré.", exc)
+            return
+        if report["rejected"]:
+            logger.warning("Palettes ignorées : %s", ", ".join(report["rejected"]))
