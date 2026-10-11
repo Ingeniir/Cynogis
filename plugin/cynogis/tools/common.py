@@ -69,6 +69,13 @@ def get_vector_layer(layer_id: str) -> QgsVectorLayer:
     return layer
 
 
+def get_raster_layer(layer_id: str) -> QgsRasterLayer:
+    layer = get_layer(layer_id)
+    if not isinstance(layer, QgsRasterLayer):
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'est pas une couche raster.")
+    return layer
+
+
 def layer_kind(layer: QgsMapLayer) -> str:
     if isinstance(layer, QgsVectorLayer):
         return "vector"

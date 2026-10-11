@@ -16,14 +16,17 @@ from .core.policy import PermissionPolicy
 from .core.registry import Level, ToolRegistry
 from .tools import (
     algorithms,
+    coefficients,
     editing,
     features,
     geoprocessing,
+    landscape,
     layers,
     measures,
     overlaps,
     shapefiles,
     system,
+    terrain,
 )
 from .ui.confirm import make_confirmer
 
@@ -31,7 +34,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path.home() / ".cynogis"
 MENU = "&Cynogis"
 TOOL_MODULES = (system, layers, features, measures, overlaps, geoprocessing, algorithms,
-                editing, shapefiles)
+                editing, shapefiles, coefficients, landscape, terrain)
 logger = logging.getLogger("cynogis")
 
 

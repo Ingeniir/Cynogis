@@ -64,6 +64,23 @@ def is_optional(param: Any) -> bool:
     return bool(param.flags() & Qgis.ProcessingParameterFlag.Optional)
 
 
+def _run(algorithm_id: str, params: dict[str, Any]) -> dict[str, Any]:
+    context = QgsProcessingContext()
+    context.setProject(QgsProject.instance())
+    feedback = QgsProcessingFeedback()
+    try:
+        return processing.run(algorithm_id, params, context=context, feedback=feedback)
+    except QgsProcessingException as exc:
+        raise ToolError(ErrorCode.PROCESSING_FAILED, f"{algorithm_id} : {exc}",
+                        {"log": feedback.textLog()[-2000:]}) from exc
+
+
+def run_in_memory(algorithm_id: str, params: dict[str, Any]) -> QgsVectorLayer:
+    """Étape intermédiaire : sortie OUTPUT en couche mémoire, rien d'écrit ni d'ajouté au
+    projet. Le résultat final passe ensuite par run_to_project."""
+    return _run(algorithm_id, {**params, "OUTPUT": "memory:"})["OUTPUT"]
+
+
 def run_to_project(algorithm_id: str, params: dict[str, Any], output_name: str) -> ToolResult:
     """Exécute un algorithme Processing ; chaque sortie obligatoire va dans un fichier neuf de
     mcp_outputs/ puis est ajoutée au projet. Les paramètres de sortie sont imposés ici."""
@@ -83,16 +100,7 @@ def run_to_project(algorithm_id: str, params: dict[str, Any], output_name: str) 
         name = base if len(destinations) == 1 else f"{base}_{clean_name(param.name())}"
         targets[param.name()] = (unique_path(directory, name, suffix), suffix == ".tif")
 
-    context = QgsProcessingContext()
-    context.setProject(QgsProject.instance())
-    feedback = QgsProcessingFeedback()
-    try:
-        results = processing.run(algorithm_id,
-                                 {**params, **{k: str(p) for k, (p, _) in targets.items()}},
-                                 context=context, feedback=feedback)
-    except QgsProcessingException as exc:
-        raise ToolError(ErrorCode.PROCESSING_FAILED, f"{algorithm_id} : {exc}",
-                        {"log": feedback.textLog()[-2000:]}) from exc
+    results = _run(algorithm_id, {**params, **{k: str(p) for k, (p, _) in targets.items()}})
 
     outputs = []
     for key, (path, raster) in targets.items():
