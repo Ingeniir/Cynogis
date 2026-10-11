@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from qgis.analysis import QgsGeometrySnapper  # bibliothèque d'analyse, pas qgis.core
 from qgis.core import (
     Qgis,
     QgsCoordinateTransform,
@@ -15,7 +16,6 @@ from qgis.core import (
     QgsFeatureRequest,
     QgsFields,
     QgsGeometry,
-    QgsGeometrySnapper,
     QgsMemoryProviderUtils,
     QgsPointXY,
     QgsProject,

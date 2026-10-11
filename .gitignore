@@ -7,3 +7,4 @@ dist/
 *.zip
 .idea/
 .qgis_env.json
+RAPORT.md
