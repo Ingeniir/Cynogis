@@ -22,6 +22,7 @@ from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.territory import detect_territory
 from .common import (
+    add_to_memory,
     area_m2,
     distance_area,
     extent_wgs84,
@@ -192,11 +193,10 @@ def classify_landscape(layer_id: str, source_field: str, mapping: dict,
         else:
             label = "(vide)" if raw is None else str(raw)
             unmatched[label] = unmatched.get(label, 0) + 1
-    if not memory.dataProvider().addFeatures(out):
-        raise ToolError(ErrorCode.INTERNAL_ERROR, "Copie des entités impossible.",
-                        {"error": memory.dataProvider().lastError()})
+    notes = add_to_memory(memory, out)
 
     result = save_to_project(memory, output_name or f"paysages_{layer.name()}")
+    result.warnings.extend(notes)
     total = sum(bucket["area_m2"] for bucket in summary.values())
     for bucket in summary.values():
         bucket["area_ha"] = round(bucket["area_m2"] / 10_000.0, 4)

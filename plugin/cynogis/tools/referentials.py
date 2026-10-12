@@ -27,6 +27,7 @@ from ..core.metrics import M2_PER_HA
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
+    add_to_memory,
     area_m2,
     distance_area,
     feature_request,
@@ -234,7 +235,7 @@ def clip_reference_landcover(layer_id: str, source: str, feature_ids: list | Non
                         "nomenclature dans la zone d'étude (zone hors emprise du référentiel ?).")
     raw = QgsMemoryProviderUtils.createMemoryLayer("referentiel", fields,
                                                    Qgis.WkbType.MultiPolygon, crs)
-    raw.dataProvider().addFeatures(kept)
+    add_to_memory(raw, kept)
     dissolved = run_in_memory("native:dissolve", {"INPUT": raw, "FIELD": ["pays_code"]})
     singles = run_in_memory("native:multiparttosingleparts", {"INPUT": dissolved})
 
@@ -257,9 +258,10 @@ def clip_reference_landcover(layer_id: str, source: str, feature_ids: list | Non
                                                 "count": 0, "area_m2": 0.0})
         bucket["count"] += 1
         bucket["area_m2"] += surface
-    final.dataProvider().addFeatures(features)
+    notes = add_to_memory(final, features)
 
     result = save_to_project(final, output_name or f"paysages_{source}")
+    result.warnings.extend(notes)
     total = sum(b["area_m2"] for b in summary.values())
     classes = sorted(({"code": b["code"], "label": b["label"], "count": b["count"],
                        "area_ha": round(b["area_m2"] / M2_PER_HA, 4),

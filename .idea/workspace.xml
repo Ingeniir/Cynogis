@@ -5,14 +5,16 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="779a0765-2b87-4638-9997-bd8e8a9936c3" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/plugin/cynogis/core/fielddata.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/plugin/cynogis/core/proximity.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/plugin/cynogis/core/referentials.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/plugin/cynogis/core/webservices.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/plugin/cynogis/plugin.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/plugin.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/fielddata.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/proximity.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/referentials.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/plugin/cynogis/tools/webservices.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/unit/test_fielddata.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/tests/unit/test_proximity.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/tests/unit/test_referentials.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/tests/unit/test_webservices.py" beforeDir="false" />
@@ -89,7 +91,7 @@
       <updated>1791551528772</updated>
       <workItem from="1791551714164" duration="14792000" />
       <workItem from="1791631678764" duration="1281000" />
-      <workItem from="1791654362102" duration="24466000" />
+      <workItem from="1791654362102" duration="25567000" />
     </task>
     <servers />
   </component>

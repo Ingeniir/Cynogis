@@ -132,3 +132,25 @@ def distribution(values: Sequence[float]) -> dict:
             for item in SLOPE_CLASSES
         ],
     }
+
+
+def parse_bands(bands: Sequence[dict] | None) -> list[tuple[float, str]]:
+    """Tranches d'altitude [{"max": 800, "label": "…"}, …, {"label": "…"}] → [(max, label)]
+    triées ; la dernière tranche peut omettre max (au-delà de la précédente)."""
+    parsed = []
+    for band in bands or []:
+        if "label" not in band:
+            raise ValueError("Chaque tranche d'altitude doit avoir un label.")
+        top = band.get("max")
+        parsed.append((float("inf") if top is None else float(top), str(band["label"])))
+    tops = [top for top, _ in parsed]
+    if tops != sorted(tops) or len(set(tops)) != len(tops):
+        raise ValueError("Tranches d'altitude : max strictement croissants attendus.")
+    return parsed
+
+
+def altitude_band(altitude: float | None, bands: Sequence[tuple[float, str]]) -> str | None:
+    """Libellé de la tranche contenant l'altitude (borne max exclue), None au-delà."""
+    if altitude is None:
+        return None
+    return next((label for top, label in bands if altitude < top), None)

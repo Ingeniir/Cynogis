@@ -1,14 +1,32 @@
 from __future__ import annotations
 
-from qgis.core import QgsCoordinateReferenceSystem
+from qgis.core import (
+    Qgis,
+    QgsCoordinateReferenceSystem,
+    QgsFeature,
+    QgsFields,
+    QgsGeometry,
+    QgsMemoryProviderUtils,
+)
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.territory import detect_territory
-from .common import extent_wgs84, get_vector_layer, rect_to_list, require_field
-from .outputs import run_to_project
+from .common import (
+    add_to_memory,
+    area_m2,
+    distance_area,
+    extent_wgs84,
+    feature_request,
+    geometry_kind,
+    get_vector_layer,
+    make_field,
+    rect_to_list,
+    require_field,
+)
+from .outputs import run_to_project, save_to_project
 
 OUTPUT_NAME = Param("string", "Nom de la couche produite (défaut : opération_couche). Nettoyé, "
                     "jamais écrasé : un suffixe _2, _3… est ajouté si besoin.", required=False)
@@ -17,6 +35,9 @@ LOCATION_PREDICATES = ("intersects", "contains", "disjoint", "equals", "touches"
 OVERLAYS = {"intersection": "native:intersection", "union": "native:union",
             "difference": "native:difference",
             "symmetric_difference": "native:symmetricaldifference", "clip": "native:clip"}
+# Aires d'étude d'une étude d'impact : (code, libellé), de la plus proche à la plus large.
+STUDY_AREAS = (("AEI", "Aire d'étude immédiate"), ("AER", "Aire d'étude rapprochée"),
+               ("AEE", "Aire d'étude éloignée"))
 
 
 def _name(output_name: str | None, operation: str, layer_name: str) -> str:
@@ -82,6 +103,73 @@ def buffer(layer_id: str, distance: float, segments: int, dissolve: bool,
                            "DISSOLVE": dissolve},
                           _name(output_name, f"tampon_{distance:g}m", layer.name()))
 
+
+@tool(level=Level.CREATE, params={
+    "layer_id": Param("string", "Couche du polygone projet (layer_id), en SCR projeté."),
+    "immediate_m": Param("number", "Distance de l'aire d'étude immédiate autour du projet (m) ; "
+                         "0 = emprise du projet.", required=False, default=100, minimum=0),
+    "close_m": Param("number", "Distance de l'aire d'étude rapprochée (m).", required=False,
+                     default=1000, minimum=0),
+    "distant_m": Param("number", "Distance de l'aire d'étude éloignée (m).", required=False,
+                       default=5000, minimum=0),
+    "rings": Param("boolean", "Anneaux sans recouvrement (chaque aire exclut les plus proches), "
+                   "pour mesurer des surfaces par aire. Défaut : aires imbriquées.",
+                   required=False, default=False),
+    "filter_expression": Param("string", "Entités formant le projet (défaut : toutes, "
+                               "fusionnées).", required=False),
+    "output_name": OUTPUT_NAME,
+})
+def create_study_area_buffers(layer_id: str, immediate_m: float, close_m: float,
+                              distant_m: float, rings: bool, filter_expression: str | None,
+                              output_name: str | None) -> ToolResult:
+    """Aires d'étude immédiate (AEI), rapprochée (AER) et éloignée (AEE) autour d'un projet :
+    une couche, une entité par aire (champs aire, libelle, distance_m, surface_ha). Les
+    distances usuelles varient selon le type de projet et la thématique : les confirmer avec
+    l'utilisateur."""
+    layer = get_vector_layer(layer_id)
+    if geometry_kind(layer) != "polygon":
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'est pas une couche de "
+                        "polygones.")
+    if layer.crs().isGeographic():
+        raise ToolError(ErrorCode.CRS_GEOGRAPHIC,
+                        f"{layer.name()} est en SCR géographique ({layer.crs().authid()}) : "
+                        "reprojette-la d'abord avec reproject_layer.")
+    distances = (float(immediate_m), float(close_m), float(distant_m))
+    if not distances[0] < distances[1] < distances[2]:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Distances attendues croissantes : "
+                        "immédiate < rapprochée < éloignée.")
+    geometries = [f.geometry() for f in layer.getFeatures(
+        feature_request(layer, filter_expression, []))
+        if not (f.geometry().isNull() or f.geometry().isEmpty())]
+    if not geometries:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Aucun polygone projet trouvé.")
+    project = QgsGeometry.unaryUnion(geometries).makeValid()
+
+    fields = QgsFields()
+    for spec in (("aire", "string", 3), ("libelle", "string", 40), ("distance_m", "real", 0),
+                 ("surface_ha", "real", 0)):
+        fields.append(make_field(*spec))
+    memory = QgsMemoryProviderUtils.createMemoryLayer("aires", fields,
+                                                      Qgis.WkbType.MultiPolygon, layer.crs())
+    da = distance_area(layer.crs())
+    areas = [project.buffer(d, 16) if d else project for d in distances]
+    features, summary = [], []
+    for index in reversed(range(len(areas))):  # la plus large d'abord : dessinée dessous
+        geometry = areas[index].difference(areas[index - 1]) if rings and index else areas[index]
+        geometry.convertToMultiType()
+        code, label = STUDY_AREAS[index]
+        hectares = round(area_m2(da, geometry) / 10_000.0, 2)
+        feature = QgsFeature(fields)
+        feature.setGeometry(geometry)
+        feature.setAttributes([code, label, distances[index], hectares])
+        features.append(feature)
+        summary.append({"aire": code, "distance_m": distances[index], "surface_ha": hectares})
+    notes = add_to_memory(memory, features)
+    result = save_to_project(memory, _name(output_name, "aires_etude", layer.name()))
+    result.warnings.extend(notes)
+    result.data.update({"rings": bool(rings), "project_features": len(geometries),
+                        "areas": summary[::-1]})
+    return result
 
 @tool(level=Level.CREATE, params={
     "layer_id": Param("string", "Couche vecteur (layer_id)."),

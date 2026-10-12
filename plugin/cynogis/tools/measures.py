@@ -5,8 +5,9 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
 
-from qgis.core import QgsExpression, QgsFeature, QgsFeatureRequest
+from qgis.core import QgsExpression, QgsFeature, QgsFeatureRequest, QgsGeometry
 
+from ..core import landscape as nomenclature
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
 from ..core.registry import Level, tool
@@ -20,6 +21,7 @@ from .common import (
     geometry_kind,
     get_vector_layer,
     group_key,
+    iter_geometries,
     length_m,
     perimeter_m,
     prepare_expression,
@@ -27,6 +29,7 @@ from .common import (
     territory_info,
     to_json_value,
 )
+from .export import SEPARATORS, TABLE_FORMATS, write_table
 from .features import FILTER_HELP
 
 _ALLOWED = {"polygon": {"area", "perimeter"}, "line": {"length"}}
@@ -183,3 +186,99 @@ def descriptive_stats(layer_id: str, field: str | None, expression: str | None,
         if len(rows) > max_groups:
             warnings.append(f"{len(rows)} groupes : seuls les {max_groups} premiers sont renvoyés.")
     return ToolResult(data, warnings)
+
+
+HABITAT_HEADERS = ["Habitat", "Libellé", "Nb de polygones", "Surface (ha)",
+                   "Part de l'aire d'étude (%)", "Part de la surface cartographiée (%)",
+                   "Surface moyenne (ha)", "Périmètre cumulé (m)"]
+
+
+@tool(level=Level.CREATE, params={
+    "layer_id": Param("string", "Couche des habitats (layer_id), polygones."),
+    "class_field": Param("string", "Champ du type d'habitat (code ou libellé)."),
+    "study_area_layer_id": Param("string", "Aire d'étude (layer_id) : habitats découpés par "
+                                 "elle, parts rapportées à sa surface, ligne « Non "
+                                 "cartographié ». Défaut : toute la couche.", required=False),
+    "export_format": Param("string", "Fichier du tableau dans mcp_outputs/, ou none.",
+                           required=False, default="xlsx",
+                           enum=(*TABLE_FORMATS, "none")),
+    "separator": Param("string", "Séparateur CSV.", required=False, default=";",
+                       enum=tuple(SEPARATORS)),
+    "output_name": Param("string", "Nom du fichier (nettoyé, jamais écrasé).", required=False),
+})
+def habitat_area_stats(layer_id: str, class_field: str, study_area_layer_id: str | None,
+                       export_format: str, separator: str,
+                       output_name: str | None) -> ToolResult:
+    """Tableau des habitats de l'aire d'étude : nombre de polygones, surface (ha), part de
+    l'aire d'étude et de la surface cartographiée (%), surface moyenne, périmètre cumulé
+    (limites de l'aire d'étude comprises). Surfaces ellipsoïdales. Libellé ajouté si les
+    codes sont ceux de la nomenclature des paysages. Exporté en tableur (xlsx par défaut)."""
+    layer = get_vector_layer(layer_id)
+    if geometry_kind(layer) != "polygon":
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'est pas une couche de "
+                        "polygones.")
+    class_field = require_field(layer, class_field)
+    da = distance_area(layer.crs())
+    aoi = None
+    if study_area_layer_id:
+        zone = get_vector_layer(study_area_layer_id)
+        parts = [g for _, g in iter_geometries(zone, feature_request(zone, None, []),
+                                               layer.crs())]
+        if geometry_kind(zone) != "polygon" or not parts:
+            raise ToolError(ErrorCode.INVALID_PARAMS, f"{zone.name()} doit contenir le "
+                            "polygone de l'aire d'étude.")
+        aoi = QgsGeometry.unaryUnion(parts).makeValid()
+        engine = QgsGeometry.createGeometryEngine(aoi.constGet())
+        engine.prepareGeometry()
+
+    groups: dict[Any, list[float]] = defaultdict(lambda: [0, 0.0, 0.0])
+    pieces = []
+    for feature, geometry in iter_geometries(layer, feature_request(layer, None, [class_field])):
+        if aoi is not None:
+            if not engine.intersects(geometry.constGet()):
+                continue
+            geometry = geometry.intersection(aoi)
+        area = area_m2(da, geometry)
+        if area <= 0:
+            continue
+        group = groups[group_key(feature[class_field])]
+        group[0] += 1
+        group[1] += area
+        group[2] += perimeter_m(da, geometry)
+        pieces.append(geometry)
+    if not groups:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Aucun habitat dans l'aire d'étude.")
+
+    mapped = sum(g[1] for g in groups.values())
+    covered = area_m2(da, QgsGeometry.unaryUnion(pieces))
+    study = area_m2(da, aoi) if aoi is not None else covered
+    rows = []
+    for key, (count, area, perimeter) in sorted(groups.items(), key=lambda kv: -kv[1][1]):
+        item = nomenclature.get_class(str(key)) if key is not None else None
+        rows.append([key, item.label if item else None, count, round(area / 10_000, 4),
+                     round(area / study * 100, 2), round(area / mapped * 100, 2),
+                     round(area / count / 10_000, 4), round(perimeter, 1)])
+    if aoi is not None and study - covered > study * 0.0001:
+        rows.append(["Non cartographié", None, None, round((study - covered) / 10_000, 4),
+                     round((study - covered) / study * 100, 2), None, None, None])
+    rows.append(["Total", None, sum(g[0] for g in groups.values()), round(study / 10_000, 4),
+                 100.0, 100.0 if covered else None, None, None])
+
+    warnings: list[str] = []
+    if mapped - covered > mapped * 0.001:
+        warnings.append(f"Polygones d'habitat qui se chevauchent : "
+                        f"{(mapped - covered) / 10_000:.2f} ha comptés plusieurs fois (parts "
+                        "faussées) ; check_geometries ou resolve_overlaps.")
+    data: dict[str, Any] = {"layer": layer.name(), "class_field": class_field,
+                            "study_area_ha": round(study / 10_000, 4),
+                            "mapped_ha": round(covered / 10_000, 4),
+                            "headers": HABITAT_HEADERS, "rows": rows}
+    outputs = []
+    if export_format != "none":
+        path, more = write_table(output_name or f"habitats_{layer.name()}", HABITAT_HEADERS,
+                                 [[None if v is None else v for v in r] for r in rows],
+                                 export_format, separator)
+        warnings.extend(more)
+        data["path"] = str(path)
+        outputs.append(str(path))
+    return ToolResult(data, warnings, outputs)

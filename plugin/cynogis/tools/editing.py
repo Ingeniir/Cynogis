@@ -33,6 +33,7 @@ from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..ui.confirm import register_detail_provider
 from .common import (
+    add_to_memory,
     area_m2,
     begin_edit,
     distance_area,
@@ -427,7 +428,7 @@ def _reference_subset(reference: QgsVectorLayer, layer: QgsVectorLayer, area: Qg
         copy = QgsFeature()
         copy.setGeometry(geometry)
         features.append(copy)
-    subset.dataProvider().addFeatures(features)
+    add_to_memory(subset, features)
     return subset
 
 

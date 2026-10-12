@@ -6,9 +6,14 @@ import os
 from pathlib import Path
 
 from qgis.core import (
+    Qgis,
+    QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
+    QgsFeature,
+    QgsFields,
     QgsMapRendererParallelJob,
     QgsMapSettings,
+    QgsMemoryProviderUtils,
     QgsProject,
     QgsVectorFileWriter,
 )
@@ -23,7 +28,15 @@ from ..core.registry import Level, tool
 from ..core.report import build_html, build_markdown, normalize_table
 from ..core.schema import Param
 from ..ui.confirm import register_detail_provider
-from .common import feature_request, get_layer, get_vector_layer, prepare_expression, to_json_value
+from .common import (
+    add_to_memory,
+    feature_request,
+    get_layer,
+    get_vector_layer,
+    make_field,
+    prepare_expression,
+    to_json_value,
+)
 from .outputs import output_dir, run_in_memory
 
 TABLE_FORMATS = {"csv": (".csv", None), "xlsx": (".xlsx", "XLSX"), "ods": (".ods", "ODS")}
@@ -49,12 +62,47 @@ def _write_csv(path: Path, headers: list, rows: list, separator: str) -> None:
         raise ToolError(ErrorCode.WRITE_FAILED, f"Écriture impossible : {exc}") from exc
 
 
+def write_table(name: str, headers: list, rows: list, format: str,
+                separator: str = ";") -> tuple[Path, list[str]]:
+    """Tableau calculé → fichier neuf de mcp_outputs/ (csv, xlsx ou ods)."""
+    suffix, driver = TABLE_FORMATS[format]
+    path, warnings = _output_path(name, suffix)
+    if driver is None:
+        _write_csv(path, headers, rows, separator)
+        return path, warnings
+    fields = QgsFields()
+    for index, header in enumerate(headers):
+        values = [row[index] for row in rows if row[index] is not None]
+        numeric = values and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                                 for v in values)
+        fields.append(make_field(str(header), "real" if numeric else "string"))
+    table = QgsMemoryProviderUtils.createMemoryLayer("table", fields, Qgis.WkbType.NoGeometry,
+                                                     QgsCoordinateReferenceSystem())
+    features = []
+    for row in rows:
+        feature = QgsFeature(fields)
+        feature.setAttributes([v if v is None or isinstance(v, (int, float)) else str(v)
+                               for v in row])
+        features.append(feature)
+    add_to_memory(table, features)
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = driver
+    options.layerName = path.stem
+    options.fileEncoding = "UTF-8"
+    error, message, *_ = QgsVectorFileWriter.writeAsVectorFormatV3(
+        table, str(path), QgsProject.instance().transformContext(), options)
+    if error != QgsVectorFileWriter.WriterError.NoError:
+        raise ToolError(ErrorCode.WRITE_FAILED, f"Export {format} impossible ({message}) : "
+                        "pilote peut-être absent, essaie format=csv.")
+    return path, warnings
+
+
 @tool(level=Level.CREATE, params={
     "layer_id": Param("string", "Couche vecteur dont la table est exportée (layer_id).",
                       required=False),
     "table": Param("object", 'Tableau calculé à écrire tel quel : {"headers": [...], '
-                   '"rows": [[...]]} ou {"rows": [{...}, ...]}. Prioritaire sur layer_id ; '
-                   "CSV uniquement.", required=False),
+                   '"rows": [[...]]} ou {"rows": [{...}, ...]}. Prioritaire sur layer_id.',
+                   required=False),
     "fields": Param("array", "Champs exportés (défaut : tous).", required=False,
                     items="string"),
     "expression": Param("string", "Ne garder que les entités vérifiant cette expression.",
@@ -72,16 +120,13 @@ def export_table(layer_id: str | None, table: dict | None, fields: list | None,
     de résultats déjà calculé (statistiques, coefficients, indices)."""
     suffix, driver = TABLE_FORMATS[format]
     if table:
-        if format != "csv":
-            raise ToolError(ErrorCode.INVALID_PARAMS, "Un tableau fourni directement ne "
-                            "s'exporte qu'en CSV.")
         try:
             normalized = normalize_table(table)
         except ValueError as exc:
             raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
-        path, warnings = _output_path(output_name or "resultats", suffix)
-        _write_csv(path, normalized["headers"], normalized["rows"], separator)
-        return ToolResult({"path": str(path), "format": "csv",
+        path, warnings = write_table(output_name or "resultats", normalized["headers"],
+                                     normalized["rows"], format, separator)
+        return ToolResult({"path": str(path), "format": format,
                            "row_count": len(normalized["rows"])}, warnings, [str(path)])
     if not layer_id:
         raise ToolError(ErrorCode.INVALID_PARAMS, "Indique layer_id ou table.")
