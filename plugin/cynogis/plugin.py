@@ -30,6 +30,7 @@ from .tools import (
     proximity,
     referentials,
     shapefiles,
+    stakes,
     styling,
     system,
     taxref,
@@ -43,7 +44,8 @@ DATA_DIR = Path.home() / ".cynogis"
 MENU = "&Cynogis"
 TOOL_MODULES = (system, layers, features, measures, overlaps, geoprocessing, algorithms,
                 editing, shapefiles, coefficients, landscape, terrain, styling, export,
-                proximity, referentials, webservices, fielddata, taxref, habref)
+                proximity, referentials, webservices, fielddata, taxref, habref,
+                stakes)
 logger = logging.getLogger("cynogis")
 
 
