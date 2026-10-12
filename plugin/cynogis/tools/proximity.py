@@ -2,7 +2,9 @@
 voisins et matrices de distances. Distances ellipsoïdales en mètres (bord à bord)."""
 from __future__ import annotations
 
+import math
 from collections import Counter
+from collections.abc import Iterable
 from typing import Any
 
 from qgis.core import (
@@ -13,6 +15,7 @@ from qgis.core import (
     QgsGeometry,
     QgsMemoryProviderUtils,
     QgsPointXY,
+    QgsRectangle,
     QgsSpatialIndex,
     QgsVectorLayer,
 )
@@ -20,6 +23,7 @@ from qgis.core import (
 from ..core import proximity
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.fields import unique_field_name
 from ..core.metrics import M2_PER_HA
 from ..core.registry import Level, tool
 from ..core.schema import Param
@@ -46,6 +50,7 @@ from .outputs import save_to_project
 HULL_METHODS = ("ordered", "convex_hull", "concave_hull")
 MATRIX_FORMATS = ("matrix", "pairs")
 MAX_PAIRS = 5000
+MAX_GRID_CELLS = 200_000  # au-delà, QGIS gèlerait trop longtemps
 METERS_PER_DEGREE = 111_320.0  # ordre de grandeur, pour pré-filtrer en SCR géographique
 UNIT = Param("string", "Unité des distances renvoyées.", required=False, default="m",
              enum=tuple(LENGTH_UNITS))
@@ -69,6 +74,33 @@ def _field(layer: QgsVectorLayer, name: str | None) -> str | None:
 
 def _label(feature: QgsFeature, id_field: str | None) -> Any:
     return to_json_value(feature[id_field]) if id_field else feature.id()
+
+
+def _index_points(points: QgsVectorLayer, crs: Any, point_filter: str | None,
+                  weight_field: str | None, class_field: str | None):
+    """Index spatial des points (dans crs), géométries et (poids, catégorie) par fid."""
+    index = QgsSpatialIndex()
+    attributes: dict[int, tuple[Any, Any]] = {}
+    geometries: dict[int, QgsGeometry] = {}
+    request = feature_request(points, point_filter,
+                              [f for f in (weight_field, class_field) if f])
+    for feature, geometry in iter_geometries(points, request, crs):
+        geometries[feature.id()] = geometry
+        attributes[feature.id()] = (
+            to_float(to_json_value(feature[weight_field])) if weight_field else None,
+            group_key(feature[class_field]) if class_field else None)
+        index.addFeature(feature.id(), geometry.boundingBox())
+    return index, geometries, attributes
+
+
+def _point_hits(polygons: Iterable[tuple[Any, QgsGeometry]], index: QgsSpatialIndex,
+                geometries: dict[int, QgsGeometry]):
+    """(polygone, géométrie, fids des points qui le touchent) pour chaque polygone."""
+    for item, polygon in polygons:
+        engine = QgsGeometry.createGeometryEngine(polygon.constGet())
+        engine.prepareGeometry()
+        yield item, polygon, [fid for fid in index.intersects(polygon.boundingBox())
+                              if engine.intersects(geometries[fid].constGet())]
 
 
 def _distance_m(da: QgsDistanceArea, a: QgsGeometry, b: QgsGeometry) -> float:
@@ -110,33 +142,21 @@ def count_points_in_polygon(polygon_layer_id: str, point_layer_id: str,
                             class_field: str | None, point_filter: str | None,
                             limit: int) -> ToolResult:
     """Compte les points contenus dans chaque polygone (reprojection automatique), avec
-    densité par hectare, somme d'un champ et décompte par catégorie. Un point sur une limite
-    commune compte pour chaque polygone touché. Pour écrire le compte dans une nouvelle
+    densité par hectare, somme d'un champ et décompte par catégorie. class_count = nombre de
+    catégories distinctes (richesse spécifique). Un point sur une limite commune compte pour
+    chaque polygone touché. Pour écrire le compte dans une nouvelle
     couche : run_algorithm native:countpointsinpolygon."""
     polygons = _layer(polygon_layer_id, "polygon")
     points = _layer(point_layer_id, "point")
     polygon_id_field = _field(polygons, polygon_id_field)
     weight_field, class_field = _field(points, weight_field), _field(points, class_field)
-    index = QgsSpatialIndex()
-    attributes: dict[int, tuple[Any, Any]] = {}
-    geometries: dict[int, QgsGeometry] = {}
-    request = feature_request(points, point_filter,
-                              [f for f in (weight_field, class_field) if f])
-    for feature, geometry in iter_geometries(points, request, polygons.crs()):
-        geometries[feature.id()] = geometry
-        attributes[feature.id()] = (
-            to_float(to_json_value(feature[weight_field])) if weight_field else None,
-            group_key(feature[class_field]) if class_field else None)
-        index.addFeature(feature.id(), geometry.boundingBox())
-
+    index, geometries, attributes = _index_points(points, polygons.crs(), point_filter,
+                                                  weight_field, class_field)
     da = distance_area(polygons.crs())
     rows, inside = [], set()
     request = feature_request(polygons, None, [polygon_id_field] if polygon_id_field else [])
-    for feature, polygon in iter_geometries(polygons, request):
-        engine = QgsGeometry.createGeometryEngine(polygon.constGet())
-        engine.prepareGeometry()
-        hits = [fid for fid in index.intersects(polygon.boundingBox())
-                if engine.intersects(geometries[fid].constGet())]
+    for feature, polygon, hits in _point_hits(iter_geometries(polygons, request), index,
+                                              geometries):
         inside.update(hits)
         area_ha = area_m2(da, polygon) / M2_PER_HA
         row: dict[str, Any] = {"fid": feature.id(), "id": _label(feature, polygon_id_field),
@@ -147,6 +167,7 @@ def count_points_in_polygon(polygon_layer_id: str, point_layer_id: str,
             row["weight_sum"] = round(sum(attributes[h][0] or 0.0 for h in hits), 4)
         if class_field:
             row["by_class"] = dict(Counter(str(attributes[h][1]) for h in hits).most_common())
+            row["class_count"] = len(row["by_class"])
         rows.append(row)
     if not rows:
         raise ToolError(ErrorCode.INVALID_PARAMS, f"{polygons.name()} ne contient aucun "
@@ -163,6 +184,118 @@ def count_points_in_polygon(polygon_layer_id: str, point_layer_id: str,
         "results": rows[:limit], "truncated": len(rows) > limit,
     }, warnings)
 
+
+def _grid(extent: QgsRectangle, size: float):
+    """Mailles carrées alignées sur les multiples de size, couvrant l'emprise."""
+    x0, y0 = math.floor(extent.xMinimum() / size), math.floor(extent.yMinimum() / size)
+    x1 = max(math.ceil(extent.xMaximum() / size), x0 + 1)
+    y1 = max(math.ceil(extent.yMaximum() / size), y0 + 1)
+    if (x1 - x0) * (y1 - y0) > MAX_GRID_CELLS:
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"Plus de {MAX_GRID_CELLS} mailles : "
+                        "augmente grid_size_m ou filtre les points.")
+    for i in range(x0, x1):
+        for j in range(y0, y1):
+            yield (f"{i * size:.0f}_{j * size:.0f}",
+                   QgsGeometry.fromRect(QgsRectangle(i * size, j * size,
+                                                     (i + 1) * size, (j + 1) * size)))
+
+
+@tool(level=Level.CREATE, params={
+    "point_layer_id": Param("string", "Couche des observations (layer_id), ex. sortie de "
+                            "import_field_data."),
+    "polygon_layer_id": Param("string", "Polygones d'habitat (layer_id). Sinon : "
+                              "grid_size_m.", required=False),
+    "grid_size_m": Param("number", "Côté des mailles carrées (m), générées sur l'emprise des "
+                         "observations (SCR projeté requis).", required=False, minimum=1),
+    "taxon_field": Param("string", "Champ du taxon des points (richesse spécifique), ex. "
+                         "taxon.", required=False),
+    "count_field": Param("string", "Champ de l'effectif des points (somme ; vide = 0), ex. "
+                         "effectif.", required=False),
+    "point_filter": Param("string", "Filtre sur les points. " + FILTER_HELP, required=False),
+    "output_name": OUTPUT_NAME,
+})
+def count_observations(point_layer_id: str, polygon_layer_id: str | None,
+                       grid_size_m: float | None, taxon_field: str | None,
+                       count_field: str | None,
+                       point_filter: str | None, output_name: str | None) -> ToolResult:
+    """Couche de synthèse des observations par polygone d'habitat ou par maille, à
+    cartographier : nb_obs, richesse (taxons distincts), effectif (somme), taxons (liste),
+    plus les champs des polygones d'habitat. Pour un simple tableau sans couche :
+    count_points_in_polygon."""
+    if bool(polygon_layer_id) == bool(grid_size_m):
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Indique soit polygon_layer_id, soit "
+                        "grid_size_m.")
+    points = _layer(point_layer_id, "point")
+    taxon_field = _field(points, taxon_field)
+    count_field = _field(points, count_field)
+    if polygon_layer_id:
+        polygons = _layer(polygon_layer_id, "polygon")
+        crs, base_fields = polygons.crs(), polygons.fields()
+        cells: Any = iter_geometries(polygons, feature_request(polygons))
+    else:
+        crs, base_fields = points.crs(), QgsFields()
+        if crs.isGeographic():
+            raise ToolError(ErrorCode.CRS_GEOGRAPHIC, f"{points.name()} est en degrés : "
+                            "reprojette-la (reproject_layer) avant de mailler.")
+        base_fields.append(make_field("maille", "string", 30))
+    index, geometries, attributes = _index_points(points, crs, point_filter, count_field,
+                                                  taxon_field)
+    if not geometries:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Aucune observation à compter.")
+    if grid_size_m:
+        extent = QgsRectangle()
+        for geometry in geometries.values():
+            extent.combineExtentWith(geometry.boundingBox())
+        cells = _grid(extent, float(grid_size_m))
+
+    fields = QgsFields(base_fields)
+    added = {}
+    for name, type_name in (("nb_obs", "integer"), ("richesse", "integer"),
+                            ("effectif", "real"), ("taxons", "string")):
+        added[name] = unique_field_name(name, fields.names())
+        fields.append(make_field(added[name], type_name))
+    memory = QgsMemoryProviderUtils.createMemoryLayer("observations", fields,
+                                                      Qgis.WkbType.MultiPolygon, crs)
+    features, inside = [], set()
+    for item, polygon, hits in _point_hits(cells, index, geometries):
+        inside.update(hits)
+        taxa = sorted({str(attributes[h][1]) for h in hits if attributes[h][1] is not None})
+        feature = QgsFeature(fields)
+        polygon.convertToMultiType()
+        feature.setGeometry(polygon)
+        if isinstance(item, QgsFeature):
+            for name in base_fields.names():
+                feature[name] = item[name]
+        else:
+            feature["maille"] = item
+        feature[added["nb_obs"]] = len(hits)
+        feature[added["richesse"]] = len(taxa) if taxon_field else None
+        feature[added["effectif"]] = (sum(attributes[h][0] or 0.0 for h in hits)
+                                      if count_field else None)
+        feature[added["taxons"]] = "; ".join(taxa) if taxon_field else None
+        features.append(feature)
+    if not memory.dataProvider().addFeatures(features):
+        raise ToolError(ErrorCode.INTERNAL_ERROR, "Création de la couche impossible.",
+                        {"error": memory.dataProvider().lastError()})
+
+    default = f"obs_maille_{float(grid_size_m):g}m" if grid_size_m else "obs_par_habitat"
+    result = save_to_project(memory, output_name or default)
+    counts = [f[added["nb_obs"]] for f in features]
+    richness = [f[added["richesse"]] for f in features] if taxon_field else []
+    all_taxa = {str(a[1]) for a in attributes.values() if a[1] is not None}
+    result.data.update({
+        "units": len(features), "units_with_obs": sum(1 for c in counts if c),
+        "observations": len(geometries), "observations_inside": len(inside),
+        "taxa_total": len(all_taxa) if taxon_field else None,
+        "max_richness": max(richness, default=None), "fields": added,
+        "next_step": f"apply_graduated_style sur {added['richesse']} ou {added['nb_obs']}.",
+    })
+    if len(geometries) - len(inside):
+        result.warnings.append(f"{len(geometries) - len(inside)} observation(s) hors de tout "
+                               "polygone.")
+    if not taxon_field:
+        result.warnings.append("Sans taxon_field : richesse non calculée.")
+    return result
 
 @tool(level=Level.CREATE, params={
     "layer_id": Param("string", "Couche de points (layer_id)."),
