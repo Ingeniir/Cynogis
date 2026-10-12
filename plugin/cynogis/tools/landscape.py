@@ -274,6 +274,50 @@ def extract_ravines(layer_id: str, width_field: str | None, default_width_m: flo
     return result
 
 
+# gdal:rastercalculator : EXTENT_OPT 3 = intersection des emprises ; RTYPE 5 = Float32.
+NDVI_NO_DATA = -9999
+NDVI_FORMULA = (f"where((A + B) == 0, {NDVI_NO_DATA}, "
+                "(B.astype(float32) - A) / (B.astype(float32) + A))")
+
+
+@tool(level=Level.CREATE, params={
+    "layer_id": Param("string", "Image contenant la bande rouge (layer_id), ex. Pléiades, "
+                      "Sentinel-2 B04."),
+    "red_band": Param("integer", "Numéro de la bande rouge.", minimum=1),
+    "nir_band": Param("integer", "Numéro de la bande proche infrarouge.", minimum=1),
+    "nir_layer_id": Param("string", "Image du proche infrarouge si elle est dans un autre "
+                          "fichier (ex. Sentinel-2 B08). Défaut : layer_id.", required=False),
+    "output_name": OUTPUT_NAME,
+})
+def compute_ndvi(layer_id: str, red_band: int, nir_band: int, nir_layer_id: str | None,
+                 output_name: str | None) -> ToolResult:
+    """Calcule l'NDVI (PIR - R) / (PIR + R), raster de -1 à 1 (.tif dans mcp_outputs/), à
+    utiliser avec check_landscape. Vérifie avec get_layer_info l'ordre des bandes de l'image
+    (Pléiades : rouge 1, PIR 4 ; Sentinel-2 : B04 rouge, B08 PIR)."""
+    red = get_raster_layer(layer_id)
+    nir = get_raster_layer(nir_layer_id) if nir_layer_id else red
+    for layer, band in ((red, red_band), (nir, nir_band)):
+        if band > layer.bandCount():
+            raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'a que "
+                            f"{layer.bandCount()} bande(s) (bande {band} demandée).")
+    if red is nir and red_band == nir_band:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Bandes rouge et PIR identiques.")
+    if red.crs() != nir.crs():
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{red.name()} et {nir.name()} n'ont pas le "
+                        "même SCR : reprojette l'une des deux (gdal:warpreproject).")
+    result = run_to_project("gdal:rastercalculator", {
+        "INPUT_A": red, "BAND_A": red_band, "INPUT_B": nir, "BAND_B": nir_band,
+        "FORMULA": NDVI_FORMULA, "NO_DATA": NDVI_NO_DATA, "EXTENT_OPT": 3, "RTYPE": 5,
+    }, output_name or f"ndvi_{red.name()}")
+    result.data.update({"red": f"{red.name()} bande {red_band}",
+                        "nir": f"{nir.name()} bande {nir_band}",
+                        "next_step": "check_landscape avec ce raster (ndvi_layer_id)."})
+    if red is not nir and (red.rasterUnitsPerPixelX() != nir.rasterUnitsPerPixelX()):
+        result.warnings.append("Résolutions différentes entre rouge et PIR : vérifier "
+                               "l'alignement des pixels.")
+    return result
+
+
 @tool(level=Level.READ, params={
     "layer_id": Param("string", "Couche de paysages classés (layer_id), ex. sortie de "
                       "classify_landscape."),
