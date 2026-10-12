@@ -32,7 +32,7 @@ from .common import (
     to_json_value,
 )
 from .geoprocessing import OUTPUT_NAME
-from .outputs import run_in_memory, run_to_project
+from .outputs import run_in_memory, run_to_project, save_to_project
 
 TERRITORY = Param("string", "Territoire, pour restreindre la nomenclature. Défaut : détecté "
                   "depuis l'emprise de la couche.", required=False, enum=("reunion", "mayotte"))
@@ -191,8 +191,7 @@ def classify_landscape(layer_id: str, source_field: str, mapping: dict,
         raise ToolError(ErrorCode.INTERNAL_ERROR, "Copie des entités impossible.",
                         {"error": memory.dataProvider().lastError()})
 
-    result = run_to_project("native:savefeatures", {"INPUT": memory},
-                            output_name or f"paysages_{layer.name()}")
+    result = save_to_project(memory, output_name or f"paysages_{layer.name()}")
     total = sum(bucket["area_m2"] for bucket in summary.values())
     for bucket in summary.values():
         bucket["area_ha"] = round(bucket["area_m2"] / 10_000.0, 4)

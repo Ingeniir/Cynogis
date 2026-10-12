@@ -43,7 +43,7 @@ from .common import (
 )
 from .features import FILTER_HELP
 from .geoprocessing import OUTPUT_NAME
-from .outputs import run_to_project
+from .outputs import save_to_project
 
 
 @tool(level=Level.READ, params={
@@ -305,8 +305,7 @@ def resolve_overlaps(layer_id: str, strategy: str, priority_field: str | None,
         raise ToolError(ErrorCode.INTERNAL_ERROR, "Copie des entités impossible.",
                         {"error": result.dataProvider().lastError()})
 
-    tool_result = run_to_project("native:savefeatures", {"INPUT": result},
-                                 output_name or f"sans_chevauchement_{layer.name()}")
+    tool_result = save_to_project(result, output_name or f"sans_chevauchement_{layer.name()}")
     summary = summarize_resolution(entries)
     tool_result.data.update({
         "strategy": strategy,
