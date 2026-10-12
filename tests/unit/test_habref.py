@@ -1,6 +1,12 @@
 import pytest
 
-from cynogis.core.habref import load_typology, match_habitats
+from cynogis.core.habref import (
+    VIA_CHILDREN,
+    correspond,
+    load_correspondences,
+    load_typology,
+    match_habitats,
+)
 
 HABREF = [
     ["﻿CD_HAB", "FG_VALIDITE", "CD_TYPO", "LB_CODE", "LB_HAB_FR", "NIVEAU", "PATH_CD_HAB"],
@@ -34,3 +40,23 @@ def test_match_habitats():
 def test_mapping_vers_code_inconnu():
     with pytest.raises(ValueError):
         match_habitats(["a"], load_typology(HABREF, "78"), {"a": "9.9"})
+
+
+CORRESP = [
+    ["\ufeffCD_CORRESP_HAB", "CD_HAB_ENTRE", "CD_HAB_SORTIE", "CD_TYPE_RELATION", "VALIDITE",
+     "CD_TYPO_ENTRE", "CD_TYPO_SORTIE"],
+    ["1", "30000", "13569", "", "true", "78", "72"],
+    ["2", "30000", "13570", "1", "true", "78", "72"],
+    ["3", "30000", "99999", "1", "false", "78", "72"],   # invalide : ignorée
+    ["4", "26946", "1", "1", "true", "88", "72"],        # autre typologie : ignorée
+]
+
+
+def test_correspondances():
+    habitats = load_typology(HABREF, "78")
+    links = load_correspondences(CORRESP, "78", "72")
+    assert links == {30000: [(13569, "non précisée"), (13570, "=")]}
+    assert correspond(habitats[2], links, habitats) == ([13569, 13570], "=, non précisée")
+    # Niveau 1 sans lien direct : codes de ses sous-unités.
+    assert correspond(habitats[0], links, habitats) == ([13569, 13570], VIA_CHILDREN)
+    assert correspond(habitats[1], links, habitats) == ([], None)

@@ -29,6 +29,7 @@ from ..core.report import build_html, build_markdown, normalize_table
 from ..core.schema import Param
 from ..ui.confirm import register_detail_provider
 from .common import (
+    add_to_memory,
     feature_request,
     get_layer,
     get_vector_layer,
@@ -83,7 +84,7 @@ def write_table(name: str, headers: list, rows: list, format: str,
         feature.setAttributes([v if v is None or isinstance(v, (int, float)) else str(v)
                                for v in row])
         features.append(feature)
-    table.dataProvider().addFeatures(features)
+    add_to_memory(table, features)
     options = QgsVectorFileWriter.SaveVectorOptions()
     options.driverName = driver
     options.layerName = path.stem

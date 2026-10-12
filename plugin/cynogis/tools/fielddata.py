@@ -26,7 +26,7 @@ from ..core.fields import RESERVED_FIELDS, unique_field_name
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.territory import detect_territory
-from .common import crs_from_text, geometry_kind, make_field, to_json_value
+from .common import add_to_memory, crs_from_text, geometry_kind, make_field, to_json_value
 from .geoprocessing import OUTPUT_NAME
 from .outputs import save_to_project
 
@@ -156,11 +156,10 @@ def import_field_data(path: str, mapping: dict | None, layer_name: str | None, s
         if (values.get("precis_m") or 0) > max_precision_m:
             imprecise += 1
         features.append(feature)
-    if not memory.dataProvider().addFeatures(features):
-        raise ToolError(ErrorCode.INTERNAL_ERROR, "Création des points impossible.",
-                        {"error": memory.dataProvider().lastError()})
+    notes = add_to_memory(memory, features)
 
     result = save_to_project(memory, output_name or f"terrain_{Path(path).stem}")
+    result.warnings.extend(notes)
     missing = [n for n, _ in fielddata.STANDARD_FIELDS if n not in used]
     result.data.update({
         "source": path, "rows_read": len(rows), "imported": len(features),

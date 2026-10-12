@@ -14,6 +14,7 @@ from qgis.core import (
     QgsExpression,
     QgsExpressionContext,
     QgsExpressionContextUtils,
+    QgsFeature,
     QgsFeatureRequest,
     QgsField,
     QgsGeometry,
@@ -310,6 +311,29 @@ def make_field(name: str, type_name: str, length: int = 0, precision: int = 0) -
     return QgsField(name, _META_TYPES[spec.qt_name], "", int(length) or spec.default_length,
                     int(precision) or spec.default_precision)
 
+
+def add_to_memory(layer: QgsVectorLayer, features: list[QgsFeature]) -> list[str]:
+    """Ajoute des entités au fournisseur d'une couche (mémoire) et vérifie le résultat.
+
+    addFeatures renvoie un tuple (ok, entités) : un test « if not … » ne détecte jamais
+    l'échec, et la couche mémoire refuse en silence une entité dont un texte dépasse la
+    longueur du champ. Ces textes sont donc tronqués (« … ») ; tout autre refus lève une
+    erreur. Renvoie l'avertissement à ajouter au résultat si des textes ont été tronqués."""
+    limits = {index: field.length() for index, field in enumerate(layer.fields())
+              if field.type() == QMetaType.Type.QString and field.length() > 0}
+    truncated = 0
+    for feature in features:
+        for index, limit in limits.items():
+            value = feature.attribute(index)
+            if isinstance(value, str) and len(value) > limit:
+                feature.setAttribute(index, value[:limit - 1] + "…")
+                truncated += 1
+    ok, _ = layer.dataProvider().addFeatures(features)
+    if not ok:
+        raise ToolError(ErrorCode.INTERNAL_ERROR, "Création des entités impossible.",
+                        {"error": layer.dataProvider().lastError()})
+    return ([f"{truncated} texte(s) plus long(s) que leur champ, tronqué(s) (« … »)."]
+            if truncated else [])
 
 def field_type_name(field: QgsField) -> str:
     """Type Cynogis correspondant à un champ existant ('string' par défaut)."""

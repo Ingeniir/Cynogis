@@ -16,6 +16,7 @@ from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.territory import detect_territory
 from .common import (
+    add_to_memory,
     extent_wgs84,
     feature_request,
     get_vector_layer,
@@ -127,11 +128,10 @@ def taxon_status_join(layer_id: str, taxon_field: str, territory: str | None,
         copy.setAttributes(feature.attributes()
                            + _values(taxon, statuses.get(taxon.cd_ref) if taxon else None))
         out.append(copy)
-    if not memory.dataProvider().addFeatures(out):
-        raise ToolError(ErrorCode.INTERNAL_ERROR, "Création de la couche impossible.",
-                        {"error": memory.dataProvider().lastError()})
+    notes = add_to_memory(memory, out)
 
     result = save_to_project(memory, output_name or f"{layer.name()}_taxref")
+    result.warnings.extend(notes)
     by_ref = {t.cd_ref: t for t in taxa.values()}
 
     def listed(test) -> list[str]:

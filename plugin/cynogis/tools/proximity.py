@@ -30,6 +30,7 @@ from ..core.schema import Param
 from ..core.stats import describe, to_float
 from ..core.units import LENGTH_UNITS, convert_length
 from .common import (
+    add_to_memory,
     area_m2,
     distance_area,
     feature_request,
@@ -308,12 +309,11 @@ def count_observations(point_layer_id: str, polygon_layer_id: str | None,
             feature[added[f"nb_{key}"]] = len(special)
             feature[added[f"sp_{key}"]] = "; ".join(special)
         features.append(feature)
-    if not memory.dataProvider().addFeatures(features):
-        raise ToolError(ErrorCode.INTERNAL_ERROR, "Création de la couche impossible.",
-                        {"error": memory.dataProvider().lastError()})
+    notes = add_to_memory(memory, features)
 
     default = f"obs_maille_{float(grid_size_m):g}m" if grid_size_m else "obs_par_habitat"
     result = save_to_project(memory, output_name or default)
+    result.warnings.extend(notes)
     counts = [f[added["nb_obs"]] for f in features]
     richness = [f[added["richesse"]] for f in features] if taxon_field else []
     all_taxa = {str(a[1]) for a in attributes.values() if a[1] is not None}
@@ -454,11 +454,10 @@ def invasive_species_map(polygon_layer_id: str, eee_layer_id: str, eee_filter: s
         for name, value in values.items():
             copy[added[name]] = value
         features.append(copy)
-    if not memory.dataProvider().addFeatures(features):
-        raise ToolError(ErrorCode.INTERNAL_ERROR, "Création de la couche impossible.",
-                        {"error": memory.dataProvider().lastError()})
+    notes = add_to_memory(memory, features)
 
     result = save_to_project(memory, output_name or f"eee_{polygons.name()}")
+    result.warnings.extend(notes)
     key = added["eee_dens"] if kind == "point" else added["eee_rec"]
     ranked = sorted(features, key=lambda f: -(f[key] or 0))
     result.data.update({
@@ -548,9 +547,10 @@ def points_to_polygon(layer_id: str, method: str, group_field: str | None,
     if not features:
         raise ToolError(ErrorCode.INVALID_GEOMETRY, "Aucun polygone constructible : il faut au "
                         "moins 3 points non alignés par groupe.")
-    memory.dataProvider().addFeatures(features)
+    notes = add_to_memory(memory, features)
 
     result = save_to_project(memory, output_name or f"{method}_{layer.name()}")
+    result.warnings.extend(notes)
     result.data.update({"method": method, "polygons": len(features),
                         "skipped_groups": skipped[:50]})
     if skipped:

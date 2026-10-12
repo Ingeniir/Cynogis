@@ -15,6 +15,7 @@ from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.territory import detect_territory
 from .common import (
+    add_to_memory,
     area_m2,
     distance_area,
     extent_wgs84,
@@ -163,10 +164,9 @@ def create_study_area_buffers(layer_id: str, immediate_m: float, close_m: float,
         feature.setAttributes([code, label, distances[index], hectares])
         features.append(feature)
         summary.append({"aire": code, "distance_m": distances[index], "surface_ha": hectares})
-    if not memory.dataProvider().addFeatures(features):
-        raise ToolError(ErrorCode.INTERNAL_ERROR, "Création des aires impossible.",
-                        {"error": memory.dataProvider().lastError()})
+    notes = add_to_memory(memory, features)
     result = save_to_project(memory, _name(output_name, "aires_etude", layer.name()))
+    result.warnings.extend(notes)
     result.data.update({"rings": bool(rings), "project_features": len(geometries),
                         "areas": summary[::-1]})
     return result

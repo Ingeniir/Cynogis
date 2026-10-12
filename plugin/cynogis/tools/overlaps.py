@@ -33,6 +33,7 @@ from ..core.resolve import (
 from ..core.schema import Param
 from ..core.units import AREA_UNITS, convert_area
 from .common import (
+    add_to_memory,
     area_m2,
     distance_area,
     feature_request,
@@ -301,11 +302,10 @@ def resolve_overlaps(layer_id: str, strategy: str, priority_field: str | None,
         new["cyn_aire_ap"] = round(after, 3)
         out.append((read_order[fid], new))
     out.sort(key=lambda item: item[0])
-    if not result.dataProvider().addFeatures([f for _, f in out]):
-        raise ToolError(ErrorCode.INTERNAL_ERROR, "Copie des entités impossible.",
-                        {"error": result.dataProvider().lastError()})
+    notes = add_to_memory(result, [f for _, f in out])
 
     tool_result = save_to_project(result, output_name or f"sans_chevauchement_{layer.name()}")
+    tool_result.warnings.extend(notes)
     summary = summarize_resolution(entries)
     tool_result.data.update({
         "strategy": strategy,

@@ -4,6 +4,10 @@ HABREF_<NN>.csv (« ; », UTF-8 avec BOM) regroupe toutes les typologies : une l
 habitat avec CD_HAB, CD_TYPO (typologie), LB_CODE (code dans la typologie), LB_HAB_FR,
 NIVEAU, PATH_CD_HAB (/parent/…/habitat) et FG_VALIDITE (NR nom de référence, SUPPR supprimé).
 Un même LB_CODE peut exister en NR et en SUPPR : le nom de référence l'emporte.
+
+HABREF_CORRESP_HAB_<NN>.csv relie les habitats de deux typologies (CD_HAB_ENTRE →
+CD_HAB_SORTIE, CD_TYPE_RELATION). Typologie CBNM → CORINE biotopes de La Réunion : seul le
+niveau 4 est relié ; un habitat plus général reçoit les codes de ses sous-unités.
 """
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ from .naming import normalize
 DOWNLOAD = "https://inpn.mnhn.fr/telechargement/referentiels/habitats"
 HABREF_FILE = r"habref_\d+.*\.(zip|csv)"   # HABREF_70.zip, HABREF_70.csv
 HABREF_MEMBER = r"habref_\d+\.csv"
+CORRESP_MEMBER = r"habref_corresp_hab_\d+\.csv"
 # Typologies locales de HABREF : clé → (CD_TYPO, territoire, intitulé).
 TYPOLOGIES = {
     "reunion_cbnm": ("78", "reunion", "Habitats naturels et semi-naturels de La Réunion "
@@ -26,6 +31,12 @@ TYPOLOGIES = {
     "mayotte_mer": ("94", "mayotte", "Habitats marins de Mayotte (2019)"),
 }
 DEFAULT_TYPOLOGY = {"reunion": "reunion_cbnm", "mayotte": "mayotte"}
+# Correspondances publiées dans HABREF : typologie → typologie cible.
+CORRESPONDENCES = {"reunion_cbnm": "reunion_corine"}
+# Types de relation entre habitats (HABREF_TYPE_REL) ; vide = non précisée.
+RELATIONS = {"": "non précisée", "1": "=", "2": "<", "3": ">", "4": "?", "5": "#", "6": "(#)",
+             "24": "pas de correspondance", "50": "(=)", "51": "(<)", "52": "(>)", "53": "(#)"}
+VIA_CHILDREN = "via sous-unités"
 FUZZY_CUTOFF = 0.75
 
 
@@ -106,3 +117,40 @@ def match_habitats(values: Iterable[str], habitats: list[Habitat],
             close = difflib.get_close_matches(key, labels, n=3, cutoff=FUZZY_CUTOFF)
             unmatched[text] = [by_label[c].to_dict() for c in close]
     return matched, unmatched
+
+
+def load_correspondences(rows: Iterable[list[str]], cd_typo_in: str,
+                         cd_typo_out: str) -> dict[int, list[tuple[int, str]]]:
+    """CD_HAB d'entrée → [(CD_HAB de sortie, relation)] (lignes de HABREF_CORRESP_HAB)."""
+    rows = iter(rows)
+    header = [name.lstrip("\ufeff").strip().upper() for name in next(rows)]
+    wanted = ("CD_HAB_ENTRE", "CD_HAB_SORTIE", "CD_TYPE_RELATION", "VALIDITE",
+              "CD_TYPO_ENTRE", "CD_TYPO_SORTIE")
+    missing = [name for name in wanted if name not in header]
+    if missing:
+        raise ValueError(f"Colonnes absentes des correspondances HABREF : {', '.join(missing)}.")
+    col = {name: header.index(name) for name in wanted}
+    links: dict[int, list[tuple[int, str]]] = {}
+    for row in rows:
+        if (len(row) <= max(col.values()) or row[col["CD_TYPO_ENTRE"]] != cd_typo_in
+                or row[col["CD_TYPO_SORTIE"]] != cd_typo_out
+                or row[col["VALIDITE"]].lower() == "false"):
+            continue
+        relation = RELATIONS.get(row[col["CD_TYPE_RELATION"]], row[col["CD_TYPE_RELATION"]])
+        links.setdefault(int(row[col["CD_HAB_ENTRE"]]), []).append(
+            (int(row[col["CD_HAB_SORTIE"]]), relation))
+    return links
+
+
+def correspond(habitat: Habitat, links: Mapping[int, list[tuple[int, str]]],
+               habitats: Iterable[Habitat]) -> tuple[list[int], str | None]:
+    """Habitats cibles d'un habitat et relation ; à défaut de lien direct, ceux de ses
+    sous-unités (relation VIA_CHILDREN, à préciser sur le terrain)."""
+    if habitat.cd_hab in links:
+        targets = list(dict.fromkeys(t for t, _ in links[habitat.cd_hab]))
+        relations = sorted({r for _, r in links[habitat.cd_hab]})
+        return targets, ", ".join(relations)
+    targets = list(dict.fromkeys(t for h in habitats
+                                 if habitat.cd_hab in h.path[:-1] and h.cd_hab in links
+                                 for t, _ in links[h.cd_hab]))
+    return (targets, VIA_CHILDREN) if targets else ([], None)
