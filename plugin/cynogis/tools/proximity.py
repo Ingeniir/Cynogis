@@ -49,7 +49,7 @@ from .features import FILTER_HELP
 from .geoprocessing import OUTPUT_NAME
 from .outputs import save_to_project
 
-HULL_METHODS = ("ordered", "convex_hull", "concave_hull")
+HULL_METHODS = ("ordered", "convex_hull", "concave_hull", "buffer")
 MATRIX_FORMATS = ("matrix", "pairs")
 MAX_PAIRS = 5000
 MAX_GRID_CELLS = 200_000  # au-delà, QGIS gèlerait trop longtemps
@@ -482,27 +482,42 @@ def invasive_species_map(polygon_layer_id: str, eee_layer_id: str, eee_filter: s
     "layer_id": Param("string", "Couche de points (layer_id)."),
     "method": Param("string", "ordered : relie les points dans l'ordre de order_field (levé "
                     "de sommets d'une parcelle) ; convex_hull : enveloppe convexe ; "
-                    "concave_hull : enveloppe concave (suit mieux la forme du nuage).",
-                    required=False, default="convex_hull", enum=HULL_METHODS),
-    "group_field": Param("string", "Un polygone par valeur de ce champ (ex. n° de parcelle). "
-                         "Absent : un seul polygone.", required=False),
+                    "concave_hull : enveloppe concave (suit mieux la forme du nuage) ; "
+                    "buffer : polygone de présence (union des tampons de buffer_m autour des "
+                    "points).", required=False, default="convex_hull", enum=HULL_METHODS),
+    "group_field": Param("string", "Un polygone par valeur de ce champ (ex. n° de parcelle, "
+                         "taxon pour une aire par espèce). Absent : un seul polygone.",
+                         required=False),
     "order_field": Param("string", "Champ d'ordre des sommets (obligatoire pour ordered), "
                          "ex. n° de point.", required=False),
     "concave_ratio": Param("number", "concave_hull : 0 = très ajusté, 1 = enveloppe "
                            "convexe.", required=False, default=0.3, minimum=0, maximum=1),
+    "buffer_m": Param("number", "Marge (m, SCR projeté) : rayon du polygone de présence "
+                      "(buffer) ; pour les enveloppes, élargissement, et polygone de présence "
+                      "pour les groupes de moins de 3 points au lieu de les ignorer.",
+                      required=False, default=0, minimum=0, maximum=100000),
     "filter_expression": Param("string", "Filtre sur les points. " + FILTER_HELP,
                                required=False),
     "output_name": OUTPUT_NAME,
 })
 def points_to_polygon(layer_id: str, method: str, group_field: str | None,
-                      order_field: str | None, concave_ratio: float,
+                      order_field: str | None, concave_ratio: float, buffer_m: float,
                       filter_expression: str | None, output_name: str | None) -> ToolResult:
     """Construit des polygones à partir de points (nouvelle couche dans mcp_outputs/) : un par
-    groupe, avec nb_points, surface_m2 et perimetre (ellipsoïdaux). Ex. : sommets levés au GPS
-    → parcelle, nuage d'observations → aire de répartition."""
+    groupe, avec nb_points, surface_m2 et perimetre (ellipsoïdaux), et methode (enveloppe ou
+    présence de repli). Ex. : sommets levés au GPS → parcelle ; observations avec
+    group_field = taxon → aire de répartition (enveloppe) ou polygone de présence (buffer)
+    par espèce."""
     layer = _layer(layer_id, "point")
     if method == "ordered" and not order_field:
         raise ToolError(ErrorCode.INVALID_PARAMS, "La méthode ordered exige order_field.")
+    if method == "buffer" and not buffer_m:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "La méthode buffer exige buffer_m > 0.")
+    if buffer_m and method == "ordered":
+        raise ToolError(ErrorCode.INVALID_PARAMS, "buffer_m ne s'applique pas à ordered.")
+    if buffer_m and layer.crs().isGeographic():
+        raise ToolError(ErrorCode.CRS_GEOGRAPHIC, f"{layer.name()} est en degrés : "
+                        "reprojette-la (reproject_layer) pour une marge en mètres.")
     group_field, order_field = _field(layer, group_field), _field(layer, order_field)
     groups: dict[Any, list[tuple[Any, float, float]]] = {}
     request = feature_request(layer, filter_expression,
@@ -519,14 +534,18 @@ def points_to_polygon(layer_id: str, method: str, group_field: str | None,
     if group_field:
         fields.append(make_field("groupe", "string", 80))
     for name, type_name in (("nb_points", "integer"), ("surface_m2", "real"),
-                            ("perimetre", "real")):
+                            ("perimetre", "real"), ("methode", "string")):
         fields.append(make_field(name, type_name))
     memory = QgsMemoryProviderUtils.createMemoryLayer("points_to_polygon", fields,
                                                       Qgis.WkbType.MultiPolygon, layer.crs())
     da = distance_area(layer.crs())
-    features, skipped, repaired = [], [], 0
+    features, skipped, fallback, repaired = [], [], [], 0
     for key, pts in groups.items():
-        polygon = _hull(method, pts, concave_ratio)
+        polygon = _hull(method, pts, concave_ratio, buffer_m)
+        used = method
+        if polygon is None and buffer_m:  # pas d'enveloppe possible : polygone de présence
+            polygon, used = _hull("buffer", pts, concave_ratio, buffer_m), "buffer"
+            fallback.append(str(key))
         if polygon is None:
             skipped.append(str(key))
             continue
@@ -542,6 +561,7 @@ def points_to_polygon(layer_id: str, method: str, group_field: str | None,
         feature["nb_points"] = len(pts)
         feature["surface_m2"] = round(area_m2(da, polygon), 2)
         feature["perimetre"] = round(perimeter_m(da, polygon), 2)
+        feature["methode"] = used
         feature.setGeometry(polygon)
         features.append(feature)
     if not features:
@@ -551,20 +571,28 @@ def points_to_polygon(layer_id: str, method: str, group_field: str | None,
 
     result = save_to_project(memory, output_name or f"{method}_{layer.name()}")
     result.warnings.extend(notes)
-    result.data.update({"method": method, "polygons": len(features),
-                        "skipped_groups": skipped[:50]})
+    result.data.update({"method": method, "buffer_m": buffer_m, "polygons": len(features),
+                        "skipped_groups": skipped[:50], "presence_fallback": fallback[:50]})
+    if fallback:
+        result.warnings.append(f"{len(fallback)} groupe(s) sans enveloppe possible (moins de "
+                               "3 points non alignés) : polygone de présence "
+                               f"({buffer_m:g} m) à la place.")
     if skipped:
         result.warnings.append(f"{len(skipped)} groupe(s) ignoré(s) : moins de 3 points non "
-                               "alignés.")
+                               "alignés (buffer_m > 0 pour un polygone de présence).")
     if repaired:
         result.warnings.append(f"{repaired} polygone(s) auto-intersecté(s) réparé(s) : vérifie "
                                "l'ordre des points (order_field).")
     return result
 
 
-def _hull(method: str, points: list[tuple[Any, float, float]],
-          concave_ratio: float) -> QgsGeometry | None:
-    """Polygone construit selon la méthode, ou None si les points ne le permettent pas."""
+def _hull(method: str, points: list[tuple[Any, float, float]], concave_ratio: float,
+          buffer_m: float = 0.0) -> QgsGeometry | None:
+    """Polygone construit selon la méthode (élargi de buffer_m), ou None si les points ne le
+    permettent pas."""
+    if method == "buffer":
+        cloud = QgsGeometry.fromMultiPointXY([QgsPointXY(x, y) for _, x, y in points])
+        return cloud.buffer(buffer_m, 16)
     if method == "ordered":
         try:
             ring = proximity.ordered_ring(points)
@@ -577,7 +605,7 @@ def _hull(method: str, points: list[tuple[Any, float, float]],
                    else cloud.concaveHull(concave_ratio, False))
     if polygon.isNull() or polygon.type() != Qgis.GeometryType.Polygon:
         return None  # moins de 3 points, ou points alignés (l'enveloppe est une ligne)
-    return polygon
+    return polygon.buffer(buffer_m, 16) if buffer_m else polygon
 
 
 @tool(level=Level.READ, params={
