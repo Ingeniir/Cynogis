@@ -9,6 +9,7 @@ from qgis.core import (
     QgsFields,
     QgsMemoryProviderUtils,
     QgsProject,
+    QgsRasterLayer,
     QgsVectorFileWriter,
     QgsVectorLayer,
 )
@@ -109,25 +110,40 @@ def check_shapefile(path: str) -> ToolResult:
     return ToolResult(data, warnings)
 
 
+RASTER_EXTENSIONS = {".tif", ".tiff", ".asc", ".vrt", ".jp2", ".img", ".ecw", ".nc", ".dem",
+                     ".bil", ".adf"}
+
+
 @tool(level=Level.CREATE, params={
-    "path": Param("string", "Chemin du fichier vecteur (.shp, .gpkg, .geojson…)."),
+    "path": Param("string", "Chemin du fichier vecteur (.shp, .gpkg, .geojson…) ou raster "
+                  "(.tif, .asc, .vrt, .jp2…)."),
     "name": Param("string", "Nom de la couche dans le projet (défaut : nom du fichier).",
                   required=False),
-    "encoding": Param("string", "Encodage des textes si les accents sont mal lus.",
+    "encoding": Param("string", "Encodage des textes si les accents sont mal lus (vecteur).",
                       required=False, enum=COMMON_ENCODINGS),
     "crs": Param("string", "SCR à déclarer si le .prj est absent, ex. EPSG:2975 (Réunion), "
                  "EPSG:4471 (Mayotte). Ne transforme pas les coordonnées.", required=False),
 })
 def load_layer(path: str, name: str | None, encoding: str | None, crs: str | None) -> ToolResult:
-    """Ajoute un fichier vecteur au projet (groupe « Cynogis »). Rien n'est copié ni modifié :
-    la couche pointe vers le fichier. Pour un shapefile, lance check_shapefile avant."""
+    """Ajoute un fichier vecteur ou raster (MNT, orthophoto…) au projet (groupe « Cynogis »),
+    type détecté automatiquement. Rien n'est copié ni modifié : la couche pointe vers le
+    fichier. Pour un shapefile, lance check_shapefile avant ; pour un raster, get_raster_info
+    ensuite (bandes, plage de valeurs)."""
     if not os.path.isfile(path):
         raise ToolError(ErrorCode.FILE_NOT_FOUND, f"Fichier introuvable : {path}")
-    layer = QgsVectorLayer(path, name or os.path.splitext(os.path.basename(path))[0], "ogr")
+    name = name or os.path.splitext(os.path.basename(path))[0]
+    layer = None
+    if os.path.splitext(path)[1].lower() not in RASTER_EXTENSIONS:
+        layer = QgsVectorLayer(path, name, "ogr")
+    if layer is None or not layer.isValid():  # extension raster, ou GeoPackage raster
+        layer = QgsRasterLayer(path, name, "gdal")
     if not layer.isValid():
         raise ToolError(ErrorCode.INVALID_PARAMS, f"QGIS ne parvient pas à lire : {path}")
+    raster = isinstance(layer, QgsRasterLayer)
     warnings: list[str] = []
-    if encoding:
+    if encoding and raster:
+        warnings.append("encoding ignoré : sans objet pour un raster.")
+    elif encoding:
         layer.setProviderEncoding(encoding)
     if crs:
         layer.setCrs(crs_from_text(crs))
@@ -135,13 +151,18 @@ def load_layer(path: str, name: str | None, encoding: str | None, crs: str | Non
                         "superposition avec les autres couches.")
     elif not layer.crs().isValid():
         warnings.append("SCR inconnu : recharge la couche avec le paramètre crs.")
-    if looks_like_mojibake(_text_sample(layer)):
+    if not raster and looks_like_mojibake(_text_sample(layer)):
         warnings.append(_mojibake_hint())
     add_to_group(layer)
-    return ToolResult({"layer_id": layer.id(), "name": layer.name(), "path": path,
-                       "crs": layer.crs().authid() or None, "geometry_type": geometry_kind(layer),
-                       "feature_count": layer.featureCount(), "fields": layer.fields().names(),
-                       "encoding": layer.dataProvider().encoding()}, warnings)
+    data = {"layer_id": layer.id(), "name": layer.name(), "path": path,
+            "type": "raster" if raster else "vector", "crs": layer.crs().authid() or None}
+    if raster:
+        data.update(band_count=layer.bandCount(), width=layer.width(), height=layer.height(),
+                    pixel_size=[layer.rasterUnitsPerPixelX(), layer.rasterUnitsPerPixelY()])
+    else:
+        data.update(geometry_type=geometry_kind(layer), feature_count=layer.featureCount(),
+                    fields=layer.fields().names(), encoding=layer.dataProvider().encoding())
+    return ToolResult(data, warnings)
 
 
 _WKB_TYPES = {"point": Qgis.WkbType.Point, "multipoint": Qgis.WkbType.MultiPoint,
