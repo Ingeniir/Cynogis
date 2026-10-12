@@ -41,6 +41,7 @@ from .common import (
     length_m,
     make_field,
     perimeter_m,
+    polygon_parts,
     prepare_expression,
     require_field,
     to_json_value,
@@ -550,8 +551,8 @@ def points_to_polygon(layer_id: str, method: str, group_field: str | None,
             skipped.append(str(key))
             continue
         if not polygon.isGeosValid():  # ordre des sommets qui se croise (nœud papillon)
-            fixed = polygon.makeValid().convertToType(Qgis.GeometryType.Polygon, True)
-            if fixed is not None and not fixed.isNull():
+            fixed = polygon_parts(polygon.makeValid())
+            if fixed is not None:
                 polygon = fixed
             repaired += 1
         polygon.convertToMultiType()

@@ -35,6 +35,7 @@ from .common import (
     get_vector_layer,
     iter_geometries,
     make_field,
+    polygon_parts,
     require_field,
     select_ids,
     to_json_value,
@@ -66,14 +67,6 @@ def _open(source: refs.Source) -> QgsVectorLayer:
     return layer
 
 
-def _polygonal(geometry: QgsGeometry) -> QgsGeometry | None:
-    """Parties surfaciques seules : un voisin qui touche la zone d'étude donne une ligne, que
-    convertToType changerait en polygone d'aire nulle."""
-    parts = [part for part in geometry.asGeometryCollection()
-             if part.type() == Qgis.GeometryType.Polygon and not part.isEmpty()]
-    return QgsGeometry.collectGeometry(parts) if parts else None
-
-
 def _clipped(source: refs.Source, aoi: QgsGeometry,
              crs: QgsCoordinateReferenceSystem) -> list[Piece]:
     """Entités du référentiel découpées par la zone d'étude (SCR crs) et traduites."""
@@ -91,7 +84,7 @@ def _clipped(source: refs.Source, aoi: QgsGeometry,
     for feature, geometry in iter_geometries(layer, request, crs):
         if not engine.intersects(geometry.constGet()):
             continue
-        piece = _polygonal(geometry if engine.contains(geometry.constGet())
+        piece = polygon_parts(geometry if engine.contains(geometry.constGet())
                            else geometry.intersection(aoi))
         if piece is None:
             continue
@@ -121,10 +114,10 @@ def _overlay(pieces: list[Piece], priority: list[Piece]) -> tuple[list[Piece], i
             continue
         replaced += 1
         for other, other_mapped, other_label in hits:
-            part = _polygonal(geometry.intersection(other))
+            part = polygon_parts(geometry.intersection(other))
             if part is not None:
                 result.append((part, other_mapped, other_label))
-        rest = _polygonal(geometry.difference(QgsGeometry.unaryUnion([h[0] for h in hits])))
+        rest = polygon_parts(geometry.difference(QgsGeometry.unaryUnion([h[0] for h in hits])))
         if rest is not None:
             result.append((rest, mapped, label))
     return result, replaced

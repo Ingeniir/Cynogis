@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from qgis.core import (
-    Qgis,
     QgsCoordinateTransform,
     QgsCsException,
     QgsFeature,
@@ -40,6 +39,7 @@ from .common import (
     geometry_kind,
     get_vector_layer,
     group_key,
+    polygon_parts,
     require_field,
 )
 from .features import FILTER_HELP
@@ -164,8 +164,11 @@ AREA_TOLERANCE_M2 = 0.001
 
 def _as_multipolygon(geom: QgsGeometry) -> QgsGeometry | None:
     """Ne garde que les parties surfaciques (une différence peut produire lignes ou points)."""
-    poly = geom.convertToType(Qgis.GeometryType.Polygon, True)
-    return None if poly is None or poly.isNull() or poly.isEmpty() else poly
+    poly = polygon_parts(geom)
+    if poly is not None:
+        poly = QgsGeometry(poly)
+        poly.convertToMultiType()
+    return poly
 
 
 def _closer_parts(fid: int, neighbours: list[int], geoms: dict[int, QgsGeometry],

@@ -38,6 +38,7 @@ from .common import (
     get_vector_layer,
     iter_geometries,
     make_field,
+    polygon_parts,
     prepare_expression,
     rect_to_list,
     require_field,
@@ -247,9 +248,10 @@ def regulatory_zoning_intersect(layer_id: str, zonings: list | None,
                                                           Qgis.WkbType.MultiPolygon, crs)
         features = []
         for label, name, piece, inter_m2 in pieces:
-            polygon = piece.convertToType(Qgis.GeometryType.Polygon, True)
-            if polygon is None or polygon.isEmpty():
+            polygon = polygon_parts(piece)
+            if polygon is None:
                 continue
+            polygon.convertToMultiType()
             feature = QgsFeature(fields)
             feature.setGeometry(polygon)
             feature.setAttributes([label, name, round(inter_m2 / 10_000, 4),

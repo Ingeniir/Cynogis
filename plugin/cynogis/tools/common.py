@@ -312,6 +312,21 @@ def make_field(name: str, type_name: str, length: int = 0, precision: int = 0) -
                     int(precision) or spec.default_precision)
 
 
+def polygon_parts(geometry: QgsGeometry | None) -> QgsGeometry | None:
+    """Parties surfaciques d'une géométrie, None s'il n'y en a pas.
+
+    Une intersection ou une différence peut renvoyer une collection mêlant polygones, lignes
+    et points (bords en contact). convertToType(Polygon) renvoie alors une géométrie vide
+    sous QGIS 4 : la surface serait perdue sans erreur."""
+    if geometry is None or geometry.isNull() or geometry.isEmpty():
+        return None
+    if geometry.type() == Qgis.GeometryType.Polygon:
+        return geometry
+    parts = [part for part in geometry.asGeometryCollection()
+             if part.type() == Qgis.GeometryType.Polygon and not part.isEmpty()]
+    return QgsGeometry.collectGeometry(parts) if parts else None
+
+
 def add_to_memory(layer: QgsVectorLayer, features: list[QgsFeature]) -> list[str]:
     """Ajoute des entités au fournisseur d'une couche (mémoire) et vérifie le résultat.
 
