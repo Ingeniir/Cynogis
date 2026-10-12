@@ -23,6 +23,7 @@ class ErrorCode(str, Enum):
     TOO_MANY_FEATURES = "TOO_MANY_FEATURES"
     COMMIT_FAILED = "COMMIT_FAILED"
     WRITE_FAILED = "WRITE_FAILED"
+    NETWORK_ERROR = "NETWORK_ERROR"
 
 class ToolError(Exception):
     """Erreur « métier » renvoyée à l'IA avec un code exploitable."""

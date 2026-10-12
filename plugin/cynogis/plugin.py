@@ -30,6 +30,7 @@ from .tools import (
     styling,
     system,
     terrain,
+    webservices,
 )
 from .ui.confirm import make_confirmer
 
@@ -38,7 +39,7 @@ DATA_DIR = Path.home() / ".cynogis"
 MENU = "&Cynogis"
 TOOL_MODULES = (system, layers, features, measures, overlaps, geoprocessing, algorithms,
                 editing, shapefiles, coefficients, landscape, terrain, styling, export,
-                proximity)
+                proximity, webservices)
 logger = logging.getLogger("cynogis")
 
 
