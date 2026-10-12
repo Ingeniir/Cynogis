@@ -92,3 +92,14 @@ def test_score_match_mots_entiers(valeur):
     assert score_match(valeur, get_class("1.2.4")) < 0.8
     assert score_match(valeur, get_class("5.2.2")) < 0.8
     assert score_match(valeur, get_class("5.1.1")) < 0.8
+
+
+def test_ndvi_controle():
+    from cynogis.core.landscape import ndvi_deviation, ndvi_range
+    assert ndvi_range("3.1.1") == (0.45, None)       # préfixe 3.1
+    assert ndvi_range("1.1.2") is None                 # habitat diffus : non contrôlé
+    assert ndvi_range("5.1.1") is None                 # ravine souvent végétalisée
+    assert ndvi_deviation("3.1.1", 0.2) == pytest.approx(0.25)   # « forêt » sans végétation
+    assert ndvi_deviation("3.1.1", 0.8) == 0.0
+    assert ndvi_deviation("1.1.1", 0.6) == pytest.approx(0.25)   # urbain dense très vert
+    assert ndvi_deviation("1.1.2", 0.6) is None

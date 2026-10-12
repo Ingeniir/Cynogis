@@ -1,9 +1,12 @@
 """Délimitation et classification des unités de paysage."""
 from __future__ import annotations
 
+import math
 from typing import Any
 
+from qgis.analysis import QgsZonalStatistics
 from qgis.core import (
+    Qgis,
     QgsExpression,
     QgsFeature,
     QgsFields,
@@ -24,7 +27,9 @@ from .common import (
     extent_wgs84,
     feature_request,
     geometry_kind,
+    get_raster_layer,
     get_vector_layer,
+    iter_geometries,
     make_field,
     prepare_expression,
     rect_to_list,
@@ -267,3 +272,86 @@ def extract_ravines(layer_id: str, width_field: str | None, default_width_m: flo
     if not width_field:
         result.warnings.append(f"Largeur uniforme de {default_width_m:g} m appliquée.")
     return result
+
+
+@tool(level=Level.READ, params={
+    "layer_id": Param("string", "Couche de paysages classés (layer_id), ex. sortie de "
+                      "classify_landscape."),
+    "ndvi_layer_id": Param("string", "Raster d'NDVI (layer_id), valeurs de -1 à 1."),
+    "code_field": Param("string", "Champ du code de nomenclature.", required=False,
+                        default="pays_code"),
+    "band": Param("integer", "Bande du raster contenant l'NDVI.", required=False, default=1,
+                  minimum=1),
+    "select": Param("boolean", "Sélectionner les entités suspectes dans QGIS, pour la "
+                    "retouche.", required=False, default=True),
+    "max_results": Param("integer", "Nombre maximal d'entités suspectes renvoyées (les plus "
+                         "éloignées de leur plage).", required=False, default=50, minimum=1,
+                         maximum=1000),
+})
+def check_landscape(layer_id: str, ndvi_layer_id: str, code_field: str, band: int,
+                    select: bool, max_results: int) -> ToolResult:
+    """Contrôle de cohérence d'une délimitation de paysages : NDVI moyen de chaque unité
+    comparé à la plage attendue pour sa classe (ex. « forêt » peu végétalisée, « urbain
+    dense » très vert). Ne modifie rien : liste les unités à retoucher par l'utilisateur
+    (split_feature, update_geometry, update_attributes)."""
+    layer = get_vector_layer(layer_id)
+    if geometry_kind(layer) != "polygon":
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'est pas une couche de "
+                        "polygones.")
+    code_field = require_field(layer, code_field)
+    raster = get_raster_layer(ndvi_layer_id)
+    if band > raster.bandCount():
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{raster.name()} n'a que "
+                        f"{raster.bandCount()} bande(s).")
+    provider = raster.dataProvider()
+    cell_x, cell_y = raster.rasterUnitsPerPixelX(), raster.rasterUnitsPerPixelY()
+    mean_key = getattr(Qgis, "ZonalStatistic", QgsZonalStatistics).Mean  # QGIS < 3.36
+
+    suspects: list[dict] = []
+    by_class: dict[str, list[float]] = {}
+    unchecked = no_data = 0
+    out_of_scale = False
+    request = feature_request(layer, None, [code_field])
+    for feature, geometry in iter_geometries(layer, request, raster.crs()):
+        value = QgsZonalStatistics.calculateStatistics(
+            provider, geometry, cell_x, cell_y, band, mean_key).get(mean_key)
+        if value is None or math.isnan(value):
+            no_data += 1
+            continue
+        out_of_scale = out_of_scale or abs(value) > 1
+        raw = to_json_value(feature[code_field])
+        code = None if raw is None else str(raw)
+        deviation = nomenclature.ndvi_deviation(code, value) if code else None
+        if deviation is None:
+            unchecked += 1
+            continue
+        by_class.setdefault(code, []).append(value)
+        if deviation > 0:
+            item = nomenclature.get_class(code)
+            low, high = nomenclature.ndvi_range(code)
+            suspects.append({"fid": feature.id(), "code": code,
+                             "label": item.label if item else None,
+                             "ndvi_mean": round(value, 3), "expected_min": low,
+                             "expected_max": high, "deviation": round(deviation, 3)})
+
+    suspects.sort(key=lambda s: -s["deviation"])
+    if select:
+        layer.selectByIds([s["fid"] for s in suspects])
+    warnings = []
+    if out_of_scale:
+        warnings.append(f"Valeurs hors de [-1, 1] dans {raster.name()} : ce n'est "
+                        "probablement pas un NDVI, résultat non fiable.")
+    if no_data:
+        warnings.append(f"{no_data} unité(s) sans pixel NDVI (hors emprise ou trop petites).")
+    if any(s["code"].startswith("2") for s in suspects):
+        warnings.append("Parcelles agricoles peu vertes : peut être une coupe ou un labour "
+                        "récent (date de l'image), pas forcément une erreur de délimitation.")
+    return ToolResult({
+        "layer": layer.name(), "ndvi_layer": raster.name(),
+        "checked": sum(len(v) for v in by_class.values()), "unchecked_classes": unchecked,
+        "suspect_count": len(suspects), "selected": bool(select),
+        "suspects": suspects[:max_results],
+        "class_ndvi": {code: {"count": len(v), "ndvi_mean": round(sum(v) / len(v), 3),
+                              "expected": nomenclature.ndvi_range(code)}
+                       for code, v in sorted(by_class.items())},
+    }, warnings)
