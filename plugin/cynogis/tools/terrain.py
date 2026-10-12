@@ -329,3 +329,48 @@ def elevation_sample(layer_id: str, dem_layer_id: str, altitude_bands: list | No
                                "valeurs prises au centre.")
     return result
 
+
+
+# Indices de native:zonalstatisticsfb (STATISTICS).
+ZONAL_STATS = ("count", "sum", "mean", "median", "stdev", "min", "max", "range", "minority",
+               "majority", "variety", "variance")
+
+
+@tool(level=Level.CREATE, params={
+    "raster_id": Param("string", "Raster à résumer (layer_id) : MNT, NDVI, densité…"),
+    "polygon_layer_id": Param("string", "Polygones dans lesquels calculer (layer_id)."),
+    "band": Param("integer", "Bande du raster.", required=False, default=1, minimum=1),
+    "stats": Param("array", "Statistiques : count (pixels), sum, mean, median, stdev, min, max, "
+                   "range, minority, majority (valeur la moins / plus fréquente, rasters de "
+                   "classes), variety (nombre de valeurs distinctes), variance.",
+                   required=False, default=["count", "mean", "min", "max"], items="string",
+                   items_enum=ZONAL_STATS),
+    "prefix": Param("string", "Préfixe des champs ajoutés, ex. alt_ → alt_mean.",
+                    required=False, default="z_"),
+    "output_name": OUTPUT_NAME,
+})
+def zonal_statistics(raster_id: str, polygon_layer_id: str, band: int, stats: list[str],
+                     prefix: str, output_name: str | None) -> ToolResult:
+    """Statistiques d'un raster dans chaque polygone (nouvelle couche, attributs des
+    polygones conservés) : altitude moyenne par parcelle, NDVI moyen par habitat, classe
+    majoritaire d'une carte d'occupation du sol. Un pixel compte s'il a son centre dans le
+    polygone : un polygone plus petit qu'un pixel peut n'en recevoir aucun."""
+    raster = get_raster_layer(raster_id)
+    polygons = get_vector_layer(polygon_layer_id)
+    if geometry_kind(polygons) != "polygon":
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        f"{polygons.name()} n'est pas une couche de polygones.")
+    if band > raster.bandCount():
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        f"{raster.name()} n'a que {raster.bandCount()} bande(s).")
+    if not stats:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "stats ne peut pas être vide.")
+    result = run_to_project("native:zonalstatisticsfb", {
+        "INPUT": polygons, "INPUT_RASTER": raster, "RASTER_BAND": band,
+        "COLUMN_PREFIX": prefix, "STATISTICS": [ZONAL_STATS.index(s) for s in dict.fromkeys(stats)],
+    }, output_name or f"zonal_{polygons.name()}")
+    result.data["fields_added"] = [prefix + s for s in dict.fromkeys(stats)]
+    if raster.crs() != polygons.crs():
+        result.warnings.append(f"SCR différents ({polygons.crs().authid()} / "
+                               f"{raster.crs().authid()}) : polygones reprojetés à la volée.")
+    return result
