@@ -56,3 +56,15 @@ def ordered_ring(points: Sequence[tuple[Any, float, float]]) -> list[tuple[float
     if len(set(ring)) < 3:
         raise ValueError("Au moins 3 points distincts sont nécessaires pour former un polygone.")
     return [*ring, ring[0]]
+
+
+INSIDE = "dans l'emprise"
+
+
+def setback_status(distance_m: float, threshold_m: float | None) -> str:
+    """Position d'une entité sensible par rapport à l'emprise et à son seuil de recul."""
+    if distance_m <= 0:
+        return INSIDE
+    if threshold_m is None:
+        return "hors emprise"
+    return "sous le seuil" if distance_m < threshold_m else "au-delà du seuil"
