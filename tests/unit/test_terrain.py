@@ -2,9 +2,11 @@ import pytest
 
 from cynogis.core.terrain import (
     SLOPE_CLASSES,
+    altitude_band,
     aspect_sector,
     degrees_to_percent,
     distribution,
+    parse_bands,
     percent_to_degrees,
     reclass_table,
     slope_class,
@@ -60,3 +62,16 @@ def test_distribution():
     classe_1 = next(c for c in bilan["classes"] if c["code"] == 1)
     assert classe_1["count"] == 2
     assert classe_1["percent"] == pytest.approx(50.0)
+
+
+def test_tranches_altitude():
+    bands = parse_bands([{"max": 800, "label": "bas"}, {"max": 1800, "label": "moyen"},
+                         {"label": "haut"}])
+    values = (0, 799.9, 800, 2500, None)
+    assert [altitude_band(a, bands) for a in values] == ["bas", "bas", "moyen", "haut", None]
+    assert altitude_band(900, parse_bands([{"max": 800, "label": "bas"}])) is None
+    with pytest.raises(ValueError):
+        parse_bands([{"max": 1800, "label": "a"}, {"max": 800, "label": "b"}])
+    with pytest.raises(ValueError):
+        parse_bands([{"max": 800}])
+
