@@ -4,7 +4,10 @@ from __future__ import annotations
 import os
 
 from qgis.core import (
+    Qgis,
     QgsCoordinateTransform,
+    QgsFields,
+    QgsMemoryProviderUtils,
     QgsProject,
     QgsVectorFileWriter,
     QgsVectorLayer,
@@ -12,6 +15,7 @@ from qgis.core import (
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.fields import FIELD_TYPES, unique_field_name
 from ..core.naming import clean_name, unique_path
 from ..core.registry import Level, tool
 from ..core.schema import Param
@@ -30,10 +34,11 @@ from .common import (
     geometry_kind,
     get_vector_layer,
     layer_field_types,
+    make_field,
     rect_to_list,
     refresh_layer,
 )
-from .outputs import add_to_group, output_dir
+from .outputs import add_to_group, output_dir, save_to_project
 
 FORMATS = {"gpkg": ("GPKG", ".gpkg"), "shp": ("ESRI Shapefile", ".shp"),
            "geojson": ("GeoJSON", ".geojson"), "csv": ("CSV", ".csv")}
@@ -137,6 +142,55 @@ def load_layer(path: str, name: str | None, encoding: str | None, crs: str | Non
                        "crs": layer.crs().authid() or None, "geometry_type": geometry_kind(layer),
                        "feature_count": layer.featureCount(), "fields": layer.fields().names(),
                        "encoding": layer.dataProvider().encoding()}, warnings)
+
+
+_WKB_TYPES = {"point": Qgis.WkbType.Point, "multipoint": Qgis.WkbType.MultiPoint,
+              "line": Qgis.WkbType.MultiLineString, "polygon": Qgis.WkbType.MultiPolygon,
+              "none": Qgis.WkbType.NoGeometry}
+
+
+@tool(level=Level.CREATE, params={
+    "output_name": Param("string", "Nom de la nouvelle couche (et du GeoPackage)."),
+    "geometry_type": Param("string", "Géométrie : point, multipoint, line, polygon (multi-"
+                           "parties acceptées) ou none (table sans géométrie).",
+                           enum=tuple(_WKB_TYPES)),
+    "crs": Param("string", "SCR, ex. EPSG:2975 (Réunion), EPSG:4471 (Mayotte). Défaut : SCR "
+                 "du projet.", required=False),
+    "fields": Param("array", 'Champs : [{"name": "nom", "type": "string", "length": 50, '
+                    f'"precision": 0}}]. Types : {", ".join(FIELD_TYPES)}. length et precision '
+                    "facultatifs.", required=False, items="object"),
+})
+def create_layer(output_name: str, geometry_type: str, crs: str | None,
+                 fields: list[dict] | None) -> ToolResult:
+    """Crée une couche vide (GeoPackage neuf dans mcp_outputs/, groupe « Cynogis ») avec les
+    champs demandés, prête à recevoir des entités (add_features) : relevé à numériser,
+    couche de travail, table de suivi. Noms de champs nettoyés et rendus uniques."""
+    target_crs = crs_from_text(crs) if crs else QgsProject.instance().crs()
+    if geometry_type != "none" and not target_crs.isValid():
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Projet sans SCR : précise crs.")
+    qfields = QgsFields()
+    renamed = []
+    for spec in fields or []:
+        if not isinstance(spec, dict) or not spec.get("name") or not spec.get("type"):
+            raise ToolError(ErrorCode.INVALID_PARAMS,
+                            f"Champ mal décrit : {spec!r} (name et type obligatoires).")
+        name = unique_field_name(spec["name"], qfields.names())
+        if name != spec["name"]:
+            renamed.append(f"{spec['name']} → {name}")
+        qfields.append(make_field(name, spec["type"], spec.get("length") or 0,
+                                  spec.get("precision") or 0))
+    memory = QgsMemoryProviderUtils.createMemoryLayer(output_name, qfields,
+                                                      _WKB_TYPES[geometry_type], target_crs)
+    result = save_to_project(memory, output_name)
+    result.warnings = [w for w in result.warnings if not w.endswith("est vide.")]
+    if renamed:
+        result.warnings.append("Champs renommés : " + ", ".join(renamed) + ".")
+    if geometry_type != "none" and target_crs.isGeographic():
+        result.warnings.append(f"SCR géographique ({target_crs.authid()}) : préfère EPSG:2975 "
+                               "ou EPSG:4471 pour mesurer en mètres.")
+    result.data.update(geometry_type=geometry_type, crs=target_crs.authid() or None,
+                       fields=qfields.names())
+    return result
 
 
 @tool(level=Level.MODIFY, params={
