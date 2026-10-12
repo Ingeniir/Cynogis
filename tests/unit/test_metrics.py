@@ -6,6 +6,7 @@ from cynogis.core.metrics import (
     division_index,
     edge_density,
     effective_mesh_size,
+    elongation,
     largest_patch_index,
     patch_density,
     shannon_evenness,
@@ -108,3 +109,10 @@ def test_lisiere_interne_comptee_une_fois():
     taches = [{"class": "a", "area": 10_000.0, "perimeter": 400.0},
               {"class": "b", "area": 10_000.0, "perimeter": 400.0}]
     assert summarize_patches(taches, landscape_perimeter=600.0)["total_edge_m"] == 100.0
+
+
+def test_elongation():
+    assert elongation(10.0, 10.0) == 1.0
+    assert elongation(100.0, 5.0) == pytest.approx(0.05)
+    assert elongation(5.0, 100.0) == pytest.approx(0.05)
+    assert elongation(0.0, 10.0) is None

@@ -3,9 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from qgis.core import QgsMapLayer, QgsProject, QgsRasterLayer, QgsVectorLayer, QgsWkbTypes
+from qgis.core import (
+    Qgis,
+    QgsMapLayer,
+    QgsProject,
+    QgsRasterBandStats,
+    QgsRasterLayer,
+    QgsRectangle,
+    QgsVectorLayer,
+    QgsWkbTypes,
+)
 
 from ..core.dispatcher import ToolResult
+from ..core.errors import ErrorCode, ToolError
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
@@ -16,6 +26,7 @@ from .common import (
     file_format,
     geometry_kind,
     get_layer,
+    get_raster_layer,
     layer_kind,
     rect_to_list,
     source_path,
@@ -74,7 +85,10 @@ def get_layer_info(layer_id: str) -> ToolResult:
     """Description détaillée d'une couche. Vecteur : champs (nom, type, longueur), encodage,
     filtre actif. Raster : bandes, type de données, nodata, taille de pixel. Pour les deux :
     SCR, emprise (SCR de la couche et WGS84), territoire détecté et SCR de référence."""
-    layer = get_layer(layer_id)
+    return _info(get_layer(layer_id))
+
+
+def _info(layer: QgsMapLayer) -> ToolResult:
     territory, warnings = territory_info(layer)
     path = source_path(layer)
     data = {
@@ -107,3 +121,40 @@ def get_layer_info(layer_id: str) -> ToolResult:
                    for b in range(1, layer.bandCount() + 1)],
         )
     return ToolResult(data, warnings)
+
+
+# QGIS >= 3.36 : Qgis.RasterBandStatistic ; avant : QgsRasterBandStats.All
+_ALL_STATS = getattr(Qgis, "RasterBandStatistic", QgsRasterBandStats).All
+
+
+@tool(level=Level.READ, params={
+    "layer_id": Param("string", "Identifiant de la couche raster (layer_id)."),
+    "band": Param("integer", "Bande à analyser. Absent : toutes les bandes.",
+                  required=False, minimum=1),
+    "sample_size": Param("integer", "Nombre de pixels échantillonnés par bande pour les "
+                         "statistiques. 0 : tous les pixels (lent sur un gros raster).",
+                         required=False, default=250000, minimum=0),
+})
+def get_raster_info(layer_id: str, band: int | None, sample_size: int) -> ToolResult:
+    """Description d'un raster (MNT, orthophoto, NDVI…) : SCR, emprise, taille, résolution,
+    puis par bande type de données, nodata, min, max, moyenne et écart-type. Statistiques sur
+    un échantillon de pixels par défaut (valeurs approchées) ; sample_size=0 pour un calcul
+    exact. Pour vérifier l'ordre des bandes ou la plage de valeurs avant un calcul."""
+    layer = get_raster_layer(layer_id)
+    if band is not None and band > layer.bandCount():
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        f"{layer.name()} n'a que {layer.bandCount()} bande(s).")
+    result = _info(layer)
+    provider = layer.dataProvider()
+    sampled = sample_size and layer.width() * layer.height() > sample_size
+    bands = [b for b in result.data["bands"] if band is None or b["band"] == band]
+    for b in bands:
+        st = provider.bandStatistics(b["band"], _ALL_STATS, QgsRectangle(), sample_size)
+        b.update(min=clean_number(st.minimumValue), max=clean_number(st.maximumValue),
+                 mean=clean_number(st.mean), std_dev=clean_number(st.stdDev),
+                 pixel_count=st.elementCount)
+    result.data.update(bands=bands, stats_exact=not sampled)
+    if sampled:
+        result.warnings.append(f"Statistiques estimées sur environ {sample_size} pixels par "
+                               "bande : relancer avec sample_size=0 pour des valeurs exactes.")
+    return result

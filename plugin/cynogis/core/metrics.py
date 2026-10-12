@@ -33,6 +33,16 @@ def fractal_dimension(area: float, perimeter: float) -> float | None:
     return (2.0 * math.log(perimeter / 4.0)) / math.log(area)
 
 
+def elongation(width: float, height: float) -> float | None:
+    """Allongement entre 0 et 1 : petit côté / grand côté du rectangle orienté minimal.
+
+    1 pour un carré ou un disque, proche de 0 pour une bande étroite (haie, ripisylve).
+    """
+    if not width or not height or width <= 0 or height <= 0:
+        return None
+    return min(width, height) / max(width, height)
+
+
 def circularity(area: float, perimeter: float) -> float | None:
     """Indice de circularité entre 0 et 1 : 1 pour un disque parfait."""
     if not area or not perimeter or perimeter <= 0:

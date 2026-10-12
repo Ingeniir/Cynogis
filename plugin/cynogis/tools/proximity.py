@@ -628,14 +628,19 @@ def _hull(method: str, points: list[tuple[Any, float, float]], concave_ratio: fl
     "max_features": Param("integer", "Nombre maximal d'entités de départ.", required=False,
                           default=500, minimum=1, maximum=5000),
     "unit": UNIT,
+    "summary_only": Param("boolean", "true : seulement les statistiques et la paire la plus "
+                          "proche, sans le détail par entité (distance min / moyenne A→B).",
+                          required=False, default=False),
 })
 def nearest_features(layer_id: str, target_layer_id: str | None, k: int,
                      max_distance_m: float | None, source_id_field: str | None,
                      target_id_field: str | None, filter_expression: str | None,
-                     target_filter: str | None, max_features: int, unit: str) -> ToolResult:
+                     target_filter: str | None, max_features: int, unit: str,
+                     summary_only: bool) -> ToolResult:
     """Plus proches voisins de chaque entité, dans la même couche ou une autre (reprojection
     automatique) : distance bord à bord sur l'ellipsoïde. Ex. : forage le plus proche de chaque
-    habitation, distance entre arbres remarquables."""
+    habitation, distance entre arbres remarquables. Avec summary_only : distance minimale,
+    moyenne et médiane d'une couche à l'autre en un appel léger."""
     source = get_vector_layer(layer_id)
     target = get_vector_layer(target_layer_id) if target_layer_id else source
     same = target.id() == source.id()
@@ -683,9 +688,17 @@ def nearest_features(layer_id: str, target_layer_id: str | None, k: int,
         warnings.append(f"{isolated} entité(s) sans voisin"
                         + (f" à moins de {max_distance_m:g} m." if max_distance_m else "."))
     stats = describe([convert_length(d, unit) for d in first])
-    return ToolResult({"source_layer": source.name(), "target_layer": target.name(), "k": k,
-                       "unit": unit, "nearest_distance_stats": stats, "results": results},
-                      warnings)
+    data = {"source_layer": source.name(), "target_layer": target.name(), "k": k,
+            "unit": unit, "nearest_distance_stats": stats}
+    if summary_only:
+        closest = min((r for r in results if r["neighbors"]),
+                      key=lambda r: r["neighbors"][0]["distance"], default=None)
+        data["closest_pair"] = closest and {"fid": closest["fid"], "id": closest["id"],
+                                            **{f"target_{key}": v for key, v in
+                                               closest["neighbors"][0].items()}}
+    else:
+        data["results"] = results
+    return ToolResult(data, warnings)
 
 
 @tool(level=Level.READ, params={
