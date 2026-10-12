@@ -333,6 +333,152 @@ def count_observations(point_layer_id: str, polygon_layer_id: str | None,
         result.warnings.append("Sans taxon_field : richesse non calculée.")
     return result
 
+def _eee_patches(layer: QgsVectorLayer, crs: Any, expression: str | None,
+                 taxon_field: str | None, cover_field: str | None):
+    """Index des taches d'EEE (dans crs) et (géométrie, taxon, recouvrement %) par fid."""
+    index = QgsSpatialIndex()
+    patches: dict[int, tuple[QgsGeometry, Any, float | None]] = {}
+    request = feature_request(layer, expression, [f for f in (taxon_field, cover_field) if f])
+    for feature, geometry in iter_geometries(layer, request, crs):
+        cover = to_float(to_json_value(feature[cover_field])) if cover_field else None
+        patches[feature.id()] = (geometry, group_key(feature[taxon_field]) if taxon_field
+                                 else None, cover)
+        index.addFeature(feature.id(), geometry.boundingBox())
+    return index, patches
+
+
+@tool(level=Level.CREATE, params={
+    "polygon_layer_id": Param("string", "Polygones d'analyse (layer_id) : habitats, parcelles, "
+                              "aire d'étude…"),
+    "eee_layer_id": Param("string", "Observations (points) ou taches (polygones) d'espèces "
+                          "exotiques envahissantes (layer_id), ex. sortie de "
+                          "taxon_status_join."),
+    "eee_filter": Param("string", "Entités à retenir comme EEE. Défaut : \"eee\" = 1 si le "
+                        "champ eee existe (taxon_status_join), sinon toutes. " + FILTER_HELP,
+                        required=False),
+    "taxon_field": Param("string", "Champ du taxon (liste et nombre d'espèces).",
+                         required=False),
+    "cover_field": Param("string", "Taches : champ du recouvrement de l'EEE dans la tache "
+                         "(%, 0-100). Absent : tache entièrement envahie.", required=False),
+    "output_name": OUTPUT_NAME,
+})
+def invasive_species_map(polygon_layer_id: str, eee_layer_id: str, eee_filter: str | None,
+                         taxon_field: str | None, cover_field: str | None,
+                         output_name: str | None) -> ToolResult:
+    """Pression des espèces exotiques envahissantes par polygone, en couche à cartographier.
+    Points : eee_nb (observations), eee_dens (observations / ha). Taches : eee_nb (taches),
+    eee_ha (surface envahie, pondérée par cover_field ; sans lui, taches qui se chevauchent
+    comptées une fois) et eee_rec (% du polygone). Dans les deux cas : eee_nsp (espèces) et
+    eee_taxa. Les champs des polygones sont conservés."""
+    polygons = _layer(polygon_layer_id, "polygon")
+    eee = get_vector_layer(eee_layer_id)
+    kind = geometry_kind(eee)
+    if kind not in ("point", "polygon"):
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{eee.name()} doit contenir des points "
+                        "(observations) ou des polygones (taches).")
+    taxon_field, cover_field = _field(eee, taxon_field), _field(eee, cover_field)
+    if cover_field and kind == "point":
+        raise ToolError(ErrorCode.INVALID_PARAMS, "cover_field ne s'applique qu'aux taches "
+                        "(polygones).")
+    warnings = []
+    if eee_filter is None:
+        if eee.fields().indexOf("eee") >= 0:
+            eee_filter = '"eee" = 1'
+        else:
+            warnings.append(f"Ni eee_filter ni champ eee : toutes les entités de {eee.name()} "
+                            "sont considérées comme des EEE.")
+    if kind == "point":
+        index, geometries, attributes = _index_points(eee, polygons.crs(), eee_filter, None,
+                                                      taxon_field)
+        total = len(geometries)
+    else:
+        index, patches = _eee_patches(eee, polygons.crs(), eee_filter, taxon_field,
+                                      cover_field)
+        total = len(patches)
+    if not total:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Aucune EEE retenue : vérifie eee_filter.",
+                        {"eee_filter": eee_filter})
+
+    fields = QgsFields(polygons.fields())
+    added = {}
+    for name, type_name in (("eee_nb", "integer"), ("eee_dens", "real"), ("eee_ha", "real"),
+                            ("eee_rec", "real"), ("eee_nsp", "integer"),
+                            ("eee_taxa", "string")):
+        added[name] = unique_field_name(name, fields.names())
+        fields.append(make_field(added[name], type_name))
+    memory = QgsMemoryProviderUtils.createMemoryLayer("eee", fields, polygons.wkbType(),
+                                                      polygons.crs())
+    da = distance_area(polygons.crs())
+    features: list[QgsFeature] = []
+    taxa_total: Counter = Counter()
+    over = 0
+    for feature, polygon in iter_geometries(polygons, feature_request(polygons)):
+        area = area_m2(da, polygon)
+        values: dict[str, Any] = {}
+        taxa: Counter = Counter()
+        if kind == "point":
+            for _, _, hits in _point_hits([(None, polygon)], index, geometries):
+                taxa.update(attributes[h][1] for h in hits if attributes[h][1] is not None)
+                values["eee_nb"] = len(hits)
+                values["eee_dens"] = round(len(hits) / (area / M2_PER_HA), 4) if area else None
+        else:
+            pieces = []
+            for fid in index.intersects(polygon.boundingBox()):
+                geometry, taxon, cover = patches[fid]
+                piece = polygon.intersection(geometry)
+                if not piece.isEmpty() and area_m2(da, piece) > 0:
+                    pieces.append((piece, taxon, cover))
+            if cover_field:
+                invaded = sum(area_m2(da, piece) * max(min(cover or 0.0, 100.0), 0.0) / 100.0
+                              for piece, _, cover in pieces)
+            elif pieces:
+                invaded = area_m2(da, QgsGeometry.unaryUnion([p for p, _, _ in pieces]))
+            else:
+                invaded = 0.0
+            if area and invaded > area * 1.0001:
+                over += 1
+                invaded = area
+            for piece, taxon, _ in pieces:
+                if taxon is not None:
+                    taxa[taxon] += area_m2(da, piece) / M2_PER_HA
+            values["eee_nb"] = len(pieces)
+            values["eee_ha"] = round(invaded / M2_PER_HA, 4)
+            values["eee_rec"] = round(invaded / area * 100.0, 2) if area else None
+        taxa_total.update(taxa)
+        values["eee_nsp"] = len(taxa) if taxon_field else None
+        values["eee_taxa"] = "; ".join(str(t) for t, _ in taxa.most_common()) or None
+        copy = QgsFeature(fields)
+        copy.setGeometry(polygon)
+        for name in polygons.fields().names():
+            copy[name] = feature[name]
+        for name, value in values.items():
+            copy[added[name]] = value
+        features.append(copy)
+    if not memory.dataProvider().addFeatures(features):
+        raise ToolError(ErrorCode.INTERNAL_ERROR, "Création de la couche impossible.",
+                        {"error": memory.dataProvider().lastError()})
+
+    result = save_to_project(memory, output_name or f"eee_{polygons.name()}")
+    key = added["eee_dens"] if kind == "point" else added["eee_rec"]
+    ranked = sorted(features, key=lambda f: -(f[key] or 0))
+    result.data.update({
+        "eee_source": kind, "eee_filter": eee_filter, "eee_features": total,
+        "polygons": len(features),
+        "polygons_invaded": sum(1 for f in features if f[added["eee_nb"]]),
+        "fields": added, "ranking_field": key,
+        "most_invaded": [{key: f[key], "taxa": f[added["eee_taxa"]],
+                          **{n: to_json_value(f[n]) for n in polygons.fields().names()[:3]}}
+                         for f in ranked[:10] if f[key]],
+        "taxa": {str(t): round(n, 4) for t, n in taxa_total.most_common(30)},
+        "taxa_unit": "observations" if kind == "point" else "ha (surface brute des taches)",
+        "next_step": f"apply_graduated_style sur {key}.",
+    })
+    if over:
+        warnings.append(f"{over} polygone(s) avec un recouvrement cumulé > 100 % (taches qui "
+                        "se chevauchent) : ramené à 100 %.")
+    result.warnings[:0] = warnings
+    return result
+
 @tool(level=Level.CREATE, params={
     "layer_id": Param("string", "Couche de points (layer_id)."),
     "method": Param("string", "ordered : relie les points dans l'ordre de order_field (levé "
