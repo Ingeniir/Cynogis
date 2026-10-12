@@ -5,7 +5,7 @@ import math
 
 import numpy
 from osgeo import gdal, ogr
-from qgis.core import QgsFeature, QgsFields, QgsMemoryProviderUtils
+from qgis.core import QgsApplication, QgsFeature, QgsFields, QgsMemoryProviderUtils
 
 from ..core import terrain as relief
 from ..core.dispatcher import ToolResult
@@ -32,6 +32,16 @@ DERIVATIVES = {
                "0 = nord, sens horaire ; valeurs négatives = terrain plat."),
     "hillshade": ("native:hillshade", "ombrage", "Ombrage destiné à l'habillage cartographique."),
 }
+# Accumulation de flux : pas d'algorithme natif, premier fournisseur installé.
+# (algorithme, paramètre du MNT, paramètres fixes, sortie)
+FLOW_ALGORITHMS = (
+    ("grass:r.watershed", "elevation", {"-a": True}, "accumulation"),   # QGIS >= 3.36
+    ("grass7:r.watershed", "elevation", {"-a": True}, "accumulation"),
+    ("sagang:flowaccumulationtopdown", "ELEVATION", {}, "FLOW"),        # extension SAGA NextGen
+)
+FLOW_NOTE = ("Valeur = nombre de pixels drainés en amont (multiplier par la surface d'un pixel "
+             "pour une surface en m²). Les fortes valeurs dessinent talwegs et ravines : "
+             "seuiller (run_algorithm native:rastercalculator ou classify) pour les extraire.")
 # native:reclassifybytable : RANGE_BOUNDARIES 1 = « min <= valeur < max » ; DATA_TYPE 0 = Byte.
 RANGE_MIN_INCLUSIVE = 1
 BYTE = 0
@@ -58,22 +68,42 @@ def list_slope_classes() -> dict:
 
 @tool(level=Level.CREATE, params={
     "layer_id": Param("string", "MNT raster (layer_id), en SCR métrique."),
-    "derivative": Param("string", "slope (pente, degrés), aspect (exposition) ou hillshade "
-                        "(ombrage).", required=False, default="slope", enum=tuple(DERIVATIVES)),
+    "derivative": Param("string", "slope (pente, degrés), aspect (exposition), hillshade "
+                        "(ombrage) ou flow_accumulation (accumulation de flux, nécessite GRASS "
+                        "ou SAGA dans QGIS).", required=False, default="slope",
+                        enum=(*DERIVATIVES, "flow_accumulation")),
     "z_factor": Param("number", "Facteur vertical ; 1 si altitudes et coordonnées en mètres.",
                       required=False, default=1, minimum=0.0001, maximum=1000),
     "output_name": OUTPUT_NAME,
 })
 def derive_terrain(layer_id: str, derivative: str, z_factor: float,
                    output_name: str | None) -> ToolResult:
-    """Calcule la pente, l'exposition ou l'ombrage d'un MNT (nouveau raster .tif dans
-    mcp_outputs/). Le MNT doit être en SCR métrique (EPSG:2975, EPSG:4471)."""
+    """Calcule la pente, l'exposition, l'ombrage ou l'accumulation de flux d'un MNT (nouveau
+    raster .tif dans mcp_outputs/). Le MNT doit être en SCR métrique (EPSG:2975, EPSG:4471)."""
     layer = _metric_raster(layer_id)
+    if derivative == "flow_accumulation":
+        return _flow_accumulation(layer, output_name or f"accumulation_{layer.name()}")
     algorithm, label, note = DERIVATIVES[derivative]
     result = run_to_project(algorithm, {"INPUT": layer, "Z_FACTOR": float(z_factor)},
                             output_name or f"{label}_{layer.name()}")
     result.data.update({"derivative": derivative, "note": note})
     return result
+
+
+def _flow_accumulation(layer, output_name: str) -> ToolResult:
+    registry = QgsApplication.processingRegistry()
+    for algorithm, dem_param, fixed, output in FLOW_ALGORITHMS:
+        if registry.algorithmById(algorithm) is not None:
+            result = run_to_project(algorithm, {dem_param: layer, **fixed}, output_name,
+                                    extra_outputs=(output,))
+            result.data.update({"derivative": "flow_accumulation", "provider": algorithm,
+                                "note": FLOW_NOTE})
+            return result
+    raise ToolError(ErrorCode.ALGORITHM_NOT_ALLOWED,
+                    "Accumulation de flux indisponible : ni GRASS ni SAGA NextGen n'est actif "
+                    "dans QGIS. Activer l'extension « GRASS GIS provider » (Extensions > Gérer et "
+                    "installer les extensions > Installées) ou installer « SAGA NextGen "
+                    "Provider ».")
 
 
 @tool(level=Level.CREATE, params={
