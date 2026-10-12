@@ -77,7 +77,7 @@ def open_table(path: str | Path, pattern: str) -> Generator[io.TextIOBase]:
     """Fichier texte, ou membre d'une archive zip dont le nom correspond à pattern (regex)."""
     path = Path(path)
     if path.suffix.lower() != ".zip":
-        with open(path, encoding="utf-8", newline="") as handle:
+        with open(path, encoding="utf-8-sig", newline="") as handle:
             yield handle
         return
     with zipfile.ZipFile(path) as archive:
@@ -85,7 +85,7 @@ def open_table(path: str | Path, pattern: str) -> Generator[io.TextIOBase]:
         if not members:
             raise ValueError(f"{path.name} ne contient pas de fichier {pattern}.")
         with archive.open(members[0]) as raw:
-            yield io.TextIOWrapper(raw, encoding="utf-8", newline="")
+            yield io.TextIOWrapper(raw, encoding="utf-8-sig", newline="")
 
 
 def _columns(header: list[str], wanted: Iterable[str], source: str) -> dict[str, int]:
