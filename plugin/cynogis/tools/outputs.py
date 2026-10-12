@@ -15,6 +15,7 @@ from qgis.core import (
     QgsProcessingFeedback,
     QgsProject,
     QgsRasterLayer,
+    QgsVectorFileWriter,
     QgsVectorLayer,
 )
 
@@ -28,6 +29,7 @@ OUTPUT_DIRNAME = "mcp_outputs"
 FALLBACK_DIR = Path.home() / ".cynogis" / OUTPUT_DIRNAME
 _SUFFIXES = {"sink": ".gpkg", "vectorDestination": ".gpkg", "rasterDestination": ".tif"}
 logger = logging.getLogger("cynogis.outputs")
+_WRITE_OK = getattr(QgsVectorFileWriter, "WriterError", QgsVectorFileWriter).NoError
 
 
 def output_dir() -> tuple[Path, list[str]]:
@@ -102,17 +104,38 @@ def run_to_project(algorithm_id: str, params: dict[str, Any], output_name: str) 
 
     results = _run(algorithm_id, {**params, **{k: str(p) for k, (p, _) in targets.items()}})
 
-    outputs = []
-    for key, (path, raster) in targets.items():
-        layer = add_to_project(path, path.stem, raster)
-        item: dict[str, Any] = {"output": key, "layer_id": layer.id(), "name": layer.name(),
-                                "path": str(path)}
-        if isinstance(layer, QgsVectorLayer):
-            item["feature_count"] = layer.featureCount()
-            if layer.featureCount() == 0:
-                warnings.append(f"{layer.name()} est vide.")
-        outputs.append(item)
+    outputs = [_output_item(key, path, raster, warnings)
+               for key, (path, raster) in targets.items()]
     other = {k: to_json_value(v) for k, v in results.items() if k not in targets}
     logger.info("%s → %s", algorithm_id, ", ".join(o["path"] for o in outputs))
     return ToolResult({"algorithm": algorithm_id, "outputs": outputs, "results": other},
                       warnings, [o["path"] for o in outputs])
+
+
+def save_to_project(layer: QgsVectorLayer, output_name: str) -> ToolResult:
+    """Résultat calculé en Python (couche mémoire) → GeoPackage neuf de mcp_outputs/, ajouté au
+    projet. Remplace native:savefeatures, dont la sortie « fichier » varie selon les versions
+    de QGIS. Même forme de résultat que run_to_project."""
+    directory, warnings = output_dir()
+    path = unique_path(directory, clean_name(output_name), ".gpkg")
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "GPKG"
+    options.layerName = path.stem
+    error, message, *_ = QgsVectorFileWriter.writeAsVectorFormatV3(
+        layer, str(path), QgsProject.instance().transformContext(), options)
+    if error != _WRITE_OK:
+        raise ToolError(ErrorCode.WRITE_FAILED, f"Écriture de {path} impossible : {message}")
+    item = _output_item("OUTPUT", path, False, warnings)
+    logger.info("couche mémoire → %s", path)
+    return ToolResult({"algorithm": None, "outputs": [item], "results": {}}, warnings, [str(path)])
+
+
+def _output_item(key: str, path: Path, raster: bool, warnings: list[str]) -> dict[str, Any]:
+    layer = add_to_project(path, path.stem, raster)
+    item: dict[str, Any] = {"output": key, "layer_id": layer.id(), "name": layer.name(),
+                            "path": str(path)}
+    if isinstance(layer, QgsVectorLayer):
+        item["feature_count"] = layer.featureCount()
+        if layer.featureCount() == 0:
+            warnings.append(f"{layer.name()} est vide.")
+    return item

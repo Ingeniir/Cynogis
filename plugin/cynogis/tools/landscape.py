@@ -1,9 +1,12 @@
 """Délimitation et classification des unités de paysage."""
 from __future__ import annotations
 
+import math
 from typing import Any
 
+from qgis.analysis import QgsZonalStatistics
 from qgis.core import (
+    Qgis,
     QgsExpression,
     QgsFeature,
     QgsFields,
@@ -24,7 +27,9 @@ from .common import (
     extent_wgs84,
     feature_request,
     geometry_kind,
+    get_raster_layer,
     get_vector_layer,
+    iter_geometries,
     make_field,
     prepare_expression,
     rect_to_list,
@@ -32,7 +37,7 @@ from .common import (
     to_json_value,
 )
 from .geoprocessing import OUTPUT_NAME
-from .outputs import run_in_memory, run_to_project
+from .outputs import run_in_memory, run_to_project, save_to_project
 
 TERRITORY = Param("string", "Territoire, pour restreindre la nomenclature. Défaut : détecté "
                   "depuis l'emprise de la couche.", required=False, enum=("reunion", "mayotte"))
@@ -191,8 +196,7 @@ def classify_landscape(layer_id: str, source_field: str, mapping: dict,
         raise ToolError(ErrorCode.INTERNAL_ERROR, "Copie des entités impossible.",
                         {"error": memory.dataProvider().lastError()})
 
-    result = run_to_project("native:savefeatures", {"INPUT": memory},
-                            output_name or f"paysages_{layer.name()}")
+    result = save_to_project(memory, output_name or f"paysages_{layer.name()}")
     total = sum(bucket["area_m2"] for bucket in summary.values())
     for bucket in summary.values():
         bucket["area_ha"] = round(bucket["area_m2"] / 10_000.0, 4)
@@ -268,3 +272,130 @@ def extract_ravines(layer_id: str, width_field: str | None, default_width_m: flo
     if not width_field:
         result.warnings.append(f"Largeur uniforme de {default_width_m:g} m appliquée.")
     return result
+
+
+# gdal:rastercalculator : EXTENT_OPT 3 = intersection des emprises ; RTYPE 5 = Float32.
+NDVI_NO_DATA = -9999
+NDVI_FORMULA = (f"where((A + B) == 0, {NDVI_NO_DATA}, "
+                "(B.astype(float32) - A) / (B.astype(float32) + A))")
+
+
+@tool(level=Level.CREATE, params={
+    "layer_id": Param("string", "Image contenant la bande rouge (layer_id), ex. Pléiades, "
+                      "Sentinel-2 B04."),
+    "red_band": Param("integer", "Numéro de la bande rouge.", minimum=1),
+    "nir_band": Param("integer", "Numéro de la bande proche infrarouge.", minimum=1),
+    "nir_layer_id": Param("string", "Image du proche infrarouge si elle est dans un autre "
+                          "fichier (ex. Sentinel-2 B08). Défaut : layer_id.", required=False),
+    "output_name": OUTPUT_NAME,
+})
+def compute_ndvi(layer_id: str, red_band: int, nir_band: int, nir_layer_id: str | None,
+                 output_name: str | None) -> ToolResult:
+    """Calcule l'NDVI (PIR - R) / (PIR + R), raster de -1 à 1 (.tif dans mcp_outputs/), à
+    utiliser avec check_landscape. Vérifie avec get_layer_info l'ordre des bandes de l'image
+    (Pléiades : rouge 1, PIR 4 ; Sentinel-2 : B04 rouge, B08 PIR)."""
+    red = get_raster_layer(layer_id)
+    nir = get_raster_layer(nir_layer_id) if nir_layer_id else red
+    for layer, band in ((red, red_band), (nir, nir_band)):
+        if band > layer.bandCount():
+            raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'a que "
+                            f"{layer.bandCount()} bande(s) (bande {band} demandée).")
+    if red is nir and red_band == nir_band:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Bandes rouge et PIR identiques.")
+    if red.crs() != nir.crs():
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{red.name()} et {nir.name()} n'ont pas le "
+                        "même SCR : reprojette l'une des deux (gdal:warpreproject).")
+    result = run_to_project("gdal:rastercalculator", {
+        "INPUT_A": red, "BAND_A": red_band, "INPUT_B": nir, "BAND_B": nir_band,
+        "FORMULA": NDVI_FORMULA, "NO_DATA": NDVI_NO_DATA, "EXTENT_OPT": 3, "RTYPE": 5,
+    }, output_name or f"ndvi_{red.name()}")
+    result.data.update({"red": f"{red.name()} bande {red_band}",
+                        "nir": f"{nir.name()} bande {nir_band}",
+                        "next_step": "check_landscape avec ce raster (ndvi_layer_id)."})
+    if red is not nir and (red.rasterUnitsPerPixelX() != nir.rasterUnitsPerPixelX()):
+        result.warnings.append("Résolutions différentes entre rouge et PIR : vérifier "
+                               "l'alignement des pixels.")
+    return result
+
+
+@tool(level=Level.READ, params={
+    "layer_id": Param("string", "Couche de paysages classés (layer_id), ex. sortie de "
+                      "classify_landscape."),
+    "ndvi_layer_id": Param("string", "Raster d'NDVI (layer_id), valeurs de -1 à 1."),
+    "code_field": Param("string", "Champ du code de nomenclature.", required=False,
+                        default="pays_code"),
+    "band": Param("integer", "Bande du raster contenant l'NDVI.", required=False, default=1,
+                  minimum=1),
+    "select": Param("boolean", "Sélectionner les entités suspectes dans QGIS, pour la "
+                    "retouche.", required=False, default=True),
+    "max_results": Param("integer", "Nombre maximal d'entités suspectes renvoyées (les plus "
+                         "éloignées de leur plage).", required=False, default=50, minimum=1,
+                         maximum=1000),
+})
+def check_landscape(layer_id: str, ndvi_layer_id: str, code_field: str, band: int,
+                    select: bool, max_results: int) -> ToolResult:
+    """Contrôle de cohérence d'une délimitation de paysages : NDVI moyen de chaque unité
+    comparé à la plage attendue pour sa classe (ex. « forêt » peu végétalisée, « urbain
+    dense » très vert). Ne modifie rien : liste les unités à retoucher par l'utilisateur
+    (split_feature, update_geometry, update_attributes)."""
+    layer = get_vector_layer(layer_id)
+    if geometry_kind(layer) != "polygon":
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'est pas une couche de "
+                        "polygones.")
+    code_field = require_field(layer, code_field)
+    raster = get_raster_layer(ndvi_layer_id)
+    if band > raster.bandCount():
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{raster.name()} n'a que "
+                        f"{raster.bandCount()} bande(s).")
+    provider = raster.dataProvider()
+    cell_x, cell_y = raster.rasterUnitsPerPixelX(), raster.rasterUnitsPerPixelY()
+    mean_key = getattr(Qgis, "ZonalStatistic", QgsZonalStatistics).Mean  # QGIS < 3.36
+
+    suspects: list[dict] = []
+    by_class: dict[str, list[float]] = {}
+    unchecked = no_data = 0
+    out_of_scale = False
+    request = feature_request(layer, None, [code_field])
+    for feature, geometry in iter_geometries(layer, request, raster.crs()):
+        value = QgsZonalStatistics.calculateStatistics(
+            provider, geometry, cell_x, cell_y, band, mean_key).get(mean_key)
+        if value is None or math.isnan(value):
+            no_data += 1
+            continue
+        out_of_scale = out_of_scale or abs(value) > 1
+        raw = to_json_value(feature[code_field])
+        code = None if raw is None else str(raw)
+        deviation = nomenclature.ndvi_deviation(code, value) if code else None
+        if deviation is None:
+            unchecked += 1
+            continue
+        by_class.setdefault(code, []).append(value)
+        if deviation > 0:
+            item = nomenclature.get_class(code)
+            low, high = nomenclature.ndvi_range(code)
+            suspects.append({"fid": feature.id(), "code": code,
+                             "label": item.label if item else None,
+                             "ndvi_mean": round(value, 3), "expected_min": low,
+                             "expected_max": high, "deviation": round(deviation, 3)})
+
+    suspects.sort(key=lambda s: -s["deviation"])
+    if select:
+        layer.selectByIds([s["fid"] for s in suspects])
+    warnings = []
+    if out_of_scale:
+        warnings.append(f"Valeurs hors de [-1, 1] dans {raster.name()} : ce n'est "
+                        "probablement pas un NDVI, résultat non fiable.")
+    if no_data:
+        warnings.append(f"{no_data} unité(s) sans pixel NDVI (hors emprise ou trop petites).")
+    if any(s["code"].startswith("2") for s in suspects):
+        warnings.append("Parcelles agricoles peu vertes : peut être une coupe ou un labour "
+                        "récent (date de l'image), pas forcément une erreur de délimitation.")
+    return ToolResult({
+        "layer": layer.name(), "ndvi_layer": raster.name(),
+        "checked": sum(len(v) for v in by_class.values()), "unchecked_classes": unchecked,
+        "suspect_count": len(suspects), "selected": bool(select),
+        "suspects": suspects[:max_results],
+        "class_ndvi": {code: {"count": len(v), "ndvi_mean": round(sum(v) / len(v), 3),
+                              "expected": nomenclature.ndvi_range(code)}
+                       for code, v in sorted(by_class.items())},
+    }, warnings)

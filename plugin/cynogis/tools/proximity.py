@@ -41,7 +41,7 @@ from .common import (
 )
 from .features import FILTER_HELP
 from .geoprocessing import OUTPUT_NAME
-from .outputs import run_to_project
+from .outputs import save_to_project
 
 HULL_METHODS = ("ordered", "convex_hull", "concave_hull")
 MATRIX_FORMATS = ("matrix", "pairs")
@@ -235,8 +235,7 @@ def points_to_polygon(layer_id: str, method: str, group_field: str | None,
                         "moins 3 points non alignés par groupe.")
     memory.dataProvider().addFeatures(features)
 
-    result = run_to_project("native:savefeatures", {"INPUT": memory},
-                            output_name or f"{method}_{layer.name()}")
+    result = save_to_project(memory, output_name or f"{method}_{layer.name()}")
     result.data.update({"method": method, "polygons": len(features),
                         "skipped_groups": skipped[:50]})
     if skipped:

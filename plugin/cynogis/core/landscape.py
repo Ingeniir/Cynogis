@@ -103,6 +103,9 @@ CLASSES: tuple[LandscapeClass, ...] = (
     LandscapeClass("3.1.5", "Plantation forestière", "3", "commun",
                    ("cryptomeria", "plantation forestiere", "reboisement", "cryptomeria japonica"),
                    "#006837"),
+    LandscapeClass("3.1.6", "Autre végétation arborée", "3", "reunion",
+                   ("vegetation arboree", "boisement", "foret secondaire", "bosquet"), "#74c476",
+                   "Boisement non rattaché à un étage forestier (forêt secondaire, bosquets)."),
     LandscapeClass("3.2.1", "Savane", "3", "commun",
                    ("savane", "herbacee seche", "zone seche"), "#dfc27d"),
     LandscapeClass("3.2.2", "Fourré et brande", "3", "reunion",
@@ -300,3 +303,39 @@ def register(classes: Sequence[LandscapeClass]) -> int:
     for item in classes:
         BY_CODE[item.code] = item
     return len(classes)
+
+
+# NDVI moyen attendu par préfixe de code, (min, max), None = pas de borne ; le préfixe le
+# plus long l'emporte. Seuils larges : on signale les incohérences franches, pas les nuances
+# saisonnières. Classes sans règle (habitat diffus, ravine, zones humides intérieures…) :
+# trop hétérogènes pour être contrôlées par l'NDVI.
+NDVI_RANGES: dict[str, tuple[float | None, float | None]] = {
+    "1.1.1": (None, 0.35), "1.2": (None, 0.35), "1.3": (None, 0.3), "1.4": (0.2, None),
+    "2": (0.15, None),
+    "3.1": (0.45, None), "3.2": (0.25, None), "3.3": (None, 0.25),
+    "4.2.1": (0.35, None),
+    "5.1.2": (None, 0.1), "5.2": (None, 0.1),
+}
+
+
+def ndvi_range(code: str) -> tuple[float | None, float | None] | None:
+    """Plage d'NDVI attendue pour un code, None si la classe n'est pas contrôlée."""
+    parts = str(code).strip().split(".")
+    for size in range(len(parts), 0, -1):
+        found = NDVI_RANGES.get(".".join(parts[:size]))
+        if found:
+            return found
+    return None
+
+
+def ndvi_deviation(code: str, value: float) -> float | None:
+    """Écart de l'NDVI moyen à la plage attendue (0 = cohérent), None si non contrôlé."""
+    bounds = ndvi_range(code)
+    if bounds is None:
+        return None
+    low, high = bounds
+    if low is not None and value < low:
+        return low - value
+    if high is not None and value > high:
+        return value - high
+    return 0.0
