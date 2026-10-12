@@ -34,3 +34,11 @@ def test_ordered_ring_doublons_et_anneau_deja_ferme():
 def test_ordered_ring_trop_peu_de_points():
     with pytest.raises(ValueError, match="3 points"):
         ordered_ring([(1, 0.0, 0.0), (2, 1.0, 1.0), (3, 1.0, 1.0)])
+
+
+def test_statut_recul():
+    from cynogis.core.proximity import INSIDE, setback_status
+    assert setback_status(0.0, 50) == INSIDE
+    assert setback_status(12.0, 50) == "sous le seuil"
+    assert setback_status(50.0, 50) == "au-delà du seuil"
+    assert setback_status(12.0, None) == "hors emprise"

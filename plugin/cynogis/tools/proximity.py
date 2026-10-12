@@ -41,10 +41,12 @@ from .common import (
     length_m,
     make_field,
     perimeter_m,
+    polygon_parts,
     prepare_expression,
     require_field,
     to_json_value,
 )
+from .export import TABLE_FORMATS, write_table
 from .features import FILTER_HELP
 from .geoprocessing import OUTPUT_NAME
 from .outputs import save_to_project
@@ -550,8 +552,8 @@ def points_to_polygon(layer_id: str, method: str, group_field: str | None,
             skipped.append(str(key))
             continue
         if not polygon.isGeosValid():  # ordre des sommets qui se croise (nœud papillon)
-            fixed = polygon.makeValid().convertToType(Qgis.GeometryType.Polygon, True)
-            if fixed is not None and not fixed.isNull():
+            fixed = polygon_parts(polygon.makeValid())
+            if fixed is not None:
                 polygon = fixed
             repaired += 1
         polygon.convertToMultiType()
@@ -752,3 +754,118 @@ def distance_matrix(layer_id: str, target_layer_id: str | None, source_id_field:
             warnings.append(f"{len(pairs)} paires : seules les {MAX_PAIRS} plus courtes sont "
                             "renvoyées.")
     return ToolResult(data, warnings)
+
+
+SENSITIVE_HEADERS = ["Catégorie", "Entité", "Distance à l'emprise (m)", "Seuil de recul (m)",
+                     "Statut"]
+
+
+@tool(level=Level.CREATE, params={
+    "footprint_layer_id": Param("string", "Emprise du projet (layer_id) ; toutes les entités "
+                                "sont fusionnées."),
+    "sensitive": Param("array", "Couches sensibles : [{\"layer_id\": \"...\", \"label\": "
+                       "\"Ravines\", \"threshold_m\": 10, \"name_field\": \"nom\", \"filter\": "
+                       "\"...\"}]. Points, lignes ou polygones : gîtes, nids, cours d'eau, "
+                       "ravines, captages… threshold_m : recul à respecter (optionnel).",
+                       items="object"),
+    "max_distance_m": Param("number", "Entités au-delà de cette distance ignorées (m).",
+                            required=False, default=2000, minimum=0, maximum=100000),
+    "create_layer": Param("boolean", "Couche des lignes de plus courte distance (emprise → "
+                          "entité), pour la carte.", required=False, default=True),
+    "export_format": Param("string", "Tableau dans mcp_outputs/, ou none.", required=False,
+                           default="xlsx", enum=(*TABLE_FORMATS, "none")),
+    "output_name": Param("string", "Nom des fichiers produits.", required=False),
+})
+def distance_to_sensitive_features(footprint_layer_id: str, sensitive: list,
+                                   max_distance_m: float, create_layer: bool,
+                                   export_format: str, output_name: str | None) -> ToolResult:
+    """Distance bord à bord (ellipsoïdale) de chaque entité sensible à l'emprise du projet,
+    par catégorie, avec statut : dans l'emprise, sous le seuil de recul, au-delà. Tableau
+    trié du plus proche au plus lointain, synthèse par catégorie (nombre, plus proche,
+    conflits) et lignes de distance pour la carte."""
+    footprint = get_vector_layer(footprint_layer_id)
+    if geometry_kind(footprint) not in ("polygon", "line", "point"):
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{footprint.name()} n'a pas de géométrie.")
+    crs = footprint.crs()
+    parts = [g for _, g in iter_geometries(footprint, feature_request(footprint, None, []))]
+    if not parts:
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{footprint.name()} est vide.")
+    project = QgsGeometry.unaryUnion(parts).makeValid()
+    engine = QgsGeometry.createGeometryEngine(project.constGet())
+    engine.prepareGeometry()
+    da = distance_area(crs)
+    # Pré-filtre planaire large : la distance ellipsoïdale reste celle retenue.
+    margin = max_distance_m * 1.1 if not crs.isGeographic() else \
+        max_distance_m / METERS_PER_DEGREE * 1.5
+    search = project.boundingBox().buffered(margin)
+
+    rows: list[list] = []
+    lines: list[tuple[str, str, float, QgsGeometry]] = []
+    summary: dict[str, dict] = {}
+    for entry in sensitive or []:
+        if "layer_id" not in entry:
+            raise ToolError(ErrorCode.INVALID_PARAMS, "sensitive : layer_id requis.")
+        layer = get_vector_layer(str(entry["layer_id"]))
+        label = str(entry.get("label") or layer.name())
+        threshold = to_float(entry.get("threshold_m"))
+        name_field = _field(layer, entry.get("name_field"))
+        request = feature_request(layer, entry.get("filter"), [name_field] if name_field
+                                  else [])
+        stats = summary.setdefault(label, {"count": 0, "inside": 0, "under_threshold": 0,
+                                           "nearest_m": None, "threshold_m": threshold})
+        for feature, geometry in iter_geometries(layer, request, crs):
+            if not geometry.boundingBox().intersects(search):
+                continue
+            inside = engine.intersects(geometry.constGet())
+            distance = 0.0 if inside else _distance_m(da, geometry, project)
+            if distance > max_distance_m:
+                continue
+            state = proximity.setback_status(distance, threshold)
+            name = _label(feature, name_field)
+            rows.append([label, name, round(distance, 1), threshold, state])
+            stats["count"] += 1
+            stats["inside"] += state == proximity.INSIDE
+            stats["under_threshold"] += state == "sous le seuil"
+            if stats["nearest_m"] is None or distance < stats["nearest_m"]:
+                stats["nearest_m"] = round(distance, 1)
+            if not inside:
+                lines.append((label, str(name), round(distance, 1),
+                              geometry.shortestLine(project)))
+    if not sensitive:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Fournis au moins une couche sensible.")
+    rows.sort(key=lambda r: (r[2], r[0]))
+    conflicts = [r for r in rows if r[4] in (proximity.INSIDE, "sous le seuil")]
+    base = output_name or f"distances_{footprint.name()}"
+    data: dict[str, Any] = {"features": len(rows), "conflicts": len(conflicts),
+                            "by_category": summary, "nearest": rows[:20],
+                            "max_distance_m": max_distance_m}
+    warnings: list[str] = []
+    outputs: list[str] = []
+    if conflicts:
+        warnings.append(f"{len(conflicts)} entité(s) sensible(s) dans l'emprise ou sous leur "
+                        "seuil de recul.")
+    if export_format != "none" and rows:
+        path, more = write_table(base, SENSITIVE_HEADERS, rows, export_format)
+        data["table_path"] = str(path)
+        outputs.append(str(path))
+        warnings += more
+    result = ToolResult(data, warnings, outputs)
+    if create_layer and lines:
+        fields = QgsFields()
+        for spec in (("categorie", "string", 80), ("entite", "string", 120),
+                     ("distance_m", "real", 0)):
+            fields.append(make_field(*spec))
+        memory = QgsMemoryProviderUtils.createMemoryLayer("distances", fields,
+                                                          Qgis.WkbType.LineString, crs)
+        features = []
+        for label, name, distance, line in lines:
+            feature = QgsFeature(fields)
+            feature.setGeometry(line)
+            feature.setAttributes([label, name, distance])
+            features.append(feature)
+        notes = add_to_memory(memory, features)
+        saved = save_to_project(memory, f"{base}_lignes")
+        result.data["lines_layer"] = saved.data["outputs"][0]
+        result.outputs.extend(saved.outputs)
+        result.warnings.extend(notes + [w for w in saved.warnings if w not in result.warnings])
+    return result
