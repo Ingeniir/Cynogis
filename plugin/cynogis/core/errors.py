@@ -24,6 +24,7 @@ class ErrorCode(str, Enum):
     COMMIT_FAILED = "COMMIT_FAILED"
     WRITE_FAILED = "WRITE_FAILED"
     NETWORK_ERROR = "NETWORK_ERROR"
+    EXECUTION_FAILED = "EXECUTION_FAILED"
 
 class ToolError(Exception):
     """Erreur « métier » renvoyée à l'IA avec un code exploitable."""

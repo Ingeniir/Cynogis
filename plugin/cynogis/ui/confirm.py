@@ -11,7 +11,7 @@ from ..core.policy import Confirmer
 from ..core.registry import ToolSpec
 
 DETAIL_PROVIDERS: dict[str, Callable[[dict], list]] = {}
-VISIBLE_DETAIL_LINES = 6
+VISIBLE_DETAIL_LINES = 12
 
 
 def make_confirmer(parent: QWidget) -> Confirmer:
