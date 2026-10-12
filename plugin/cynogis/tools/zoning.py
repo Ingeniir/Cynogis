@@ -18,6 +18,7 @@ from qgis.core import (
     QgsMemoryProviderUtils,
     QgsProject,
     QgsRectangle,
+    QgsWkbTypes,
 )
 
 from ..core import zoning
@@ -25,7 +26,7 @@ from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
 from ..core.registry import Level, tool
 from ..core.schema import Param
-from ..core.territory import detect_territory
+from ..core.territory import TERRITORIES, detect_territory
 from .common import (
     add_to_memory,
     area_m2,
@@ -33,6 +34,7 @@ from .common import (
     extent_wgs84,
     feature_request,
     geometry_kind,
+    get_layer,
     get_vector_layer,
     iter_geometries,
     make_field,
@@ -259,3 +261,89 @@ def regulatory_zoning_intersect(layer_id: str, zonings: list | None,
         result.outputs.extend(saved.outputs)
         result.warnings.extend(notes + [w for w in saved.warnings if w not in result.warnings])
     return result
+
+
+@tool(level=Level.CREATE, params={
+    "zonings": Param("array", "Zonages à charger (clés) : pn_coeur, pn_adhesion, rnn, pnm, "
+                     "apb, cdl, ramsar, znieff1, znieff2, znieff1_mer, znieff2_mer, "
+                     "foret_publique, ebc.", items="string"),
+    "extent_layer_id": Param("string", "Couche dont l'emprise (élargie de buffer_m) limite le "
+                             "chargement. Absent : toute l'île (territory).", required=False),
+    "territory": Param("string", "Île entière à charger si extent_layer_id est absent.",
+                       required=False, enum=tuple(TERRITORIES)),
+    "buffer_m": Param("number", "Marge autour de l'emprise (m).", required=False, default=1000,
+                      minimum=0, maximum=50000),
+    "max_features": Param("integer", "Plafond d'entités par zonage.", required=False,
+                          default=5000, minimum=1, maximum=50000),
+})
+def fetch_wfs_layer(zonings: list, extent_layer_id: str | None, territory: str | None,
+                    buffer_m: float, max_features: int) -> ToolResult:
+    """Charge à la demande des zonages officiels (INPN, ONF, Géoportail de l'urbanisme via
+    le WFS de la Géoplateforme) sur l'emprise d'une couche ou toute l'île : un GeoPackage
+    par zonage dans mcp_outputs/, ajouté au projet dans le SCR de référence (EPSG:2975 /
+    EPSG:4471). Copie figée et datée, consultable hors ligne. Autres flux (DEAL, IGN…) :
+    web_list_services, web_download_features."""
+    try:
+        items = zoning.for_territory(None, list(zonings))
+    except ValueError as exc:
+        raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
+    if extent_layer_id:
+        source = get_layer(extent_layer_id)
+        crs = source.crs()
+        if crs.isGeographic():
+            found = detect_territory(rect_to_list(extent_wgs84(source)))
+            crs = QgsCoordinateReferenceSystem(found.epsg if found else "EPSG:2975")
+        search = QgsCoordinateTransform(source.crs(), crs, QgsProject.instance()
+                                        ).transformBoundingBox(source.extent())
+        search.grow(float(buffer_m))
+        label = source.name()
+    else:
+        if territory is None:
+            raise ToolError(ErrorCode.INVALID_PARAMS, "Indique extent_layer_id ou territory.")
+        island = TERRITORIES[territory]
+        crs = QgsCoordinateReferenceSystem(island.epsg)
+        west, south, east, north = island.bbox
+        search = QgsCoordinateTransform(WGS84, crs, QgsProject.instance()
+                                        ).transformBoundingBox(QgsRectangle(west, south,
+                                                                            east, north))
+        label = territory
+    to_target = QgsCoordinateTransform(WGS84, crs, QgsProject.instance())
+    loaded: list[dict] = []
+    outputs: list[str] = []
+    warnings: list[str] = []
+    for item in items:
+        if item.typename is None:
+            warnings.append(f"{item.label} : pas de flux national ({item.note})")
+            continue
+        try:
+            features = _wfs_features(item.typename, item.filter, search, crs, max_features)
+        except (ToolError, ValueError) as exc:
+            warnings.append(f"{item.label} : {exc}")
+            continue
+        if not features:
+            loaded.append({"zoning": item.key, "label": item.label, "features": 0})
+            continue
+        fields = features[0].fields()
+        kind = QgsWkbTypes.multiType(features[0].geometry().wkbType())
+        memory = QgsMemoryProviderUtils.createMemoryLayer(item.key, fields, kind, crs)
+        copies = []
+        for feature in features:
+            geometry = QgsGeometry(feature.geometry())
+            geometry.transform(to_target)
+            geometry.convertToMultiType()
+            copy = QgsFeature(fields)
+            copy.setGeometry(geometry)
+            copy.setAttributes(feature.attributes())
+            copies.append(copy)
+        notes = add_to_memory(memory, copies)
+        saved = save_to_project(memory, f"{item.key}_{label}")
+        outputs += saved.outputs
+        warnings += [w for w in notes + saved.warnings if w not in warnings]
+        if len(features) >= max_features:
+            warnings.append(f"{item.label} : plafond de {max_features} entités atteint, "
+                            "couche incomplète.")
+        loaded.append({"zoning": item.key, "label": item.label, "features": len(features),
+                       **saved.data["outputs"][0]})
+    return ToolResult({"extent": label, "crs": crs.authid(), "buffer_m": buffer_m
+                       if extent_layer_id else None, "layers": loaded}, warnings, outputs)
+
