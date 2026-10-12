@@ -49,7 +49,7 @@ from .common import (
 from .export import TABLE_FORMATS, write_table
 from .features import FILTER_HELP
 from .geoprocessing import OUTPUT_NAME
-from .outputs import save_to_project
+from .outputs import run_in_memory, save_to_project
 
 HULL_METHODS = ("ordered", "convex_hull", "concave_hull", "buffer")
 MATRIX_FORMATS = ("matrix", "pairs")
@@ -881,4 +881,50 @@ def distance_to_sensitive_features(footprint_layer_id: str, sensitive: list,
         result.data["lines_layer"] = saved.data["outputs"][0]
         result.outputs.extend(saved.outputs)
         result.warnings.extend(notes + [w for w in saved.warnings if w not in result.warnings])
+    return result
+
+
+@tool(level=Level.CREATE, params={
+    "layer_id": Param("string", "Couche des entités de départ (layer_id)."),
+    "target_layer_id": Param("string", "Couche des entités à rejoindre (layer_id), ex. points "
+                             "d'eau, accès, limites de zone protégée."),
+    "mode": Param("string", "edge : ligne vers le point le plus proche de l'entité cible (bord "
+                  "à bord) ; centroid : ligne vers son centroïde (desserte d'un équipement).",
+                  required=False, default="edge", enum=("edge", "centroid")),
+    "k": Param("integer", "Nombre de cibles reliées par entité de départ.", required=False,
+               default=1, minimum=1, maximum=10),
+    "max_distance_m": Param("number", "Ne relier que les cibles à moins de cette distance (m).",
+                            required=False, minimum=0),
+    "output_name": OUTPUT_NAME,
+})
+def distance_layer(layer_id: str, target_layer_id: str, mode: str, k: int,
+                   max_distance_m: float | None, output_name: str | None) -> ToolResult:
+    """Couche de lignes reliant chaque entité à ses k plus proches entités cibles (nouvelle
+    couche à cartographier) : attributs des deux entités et distance en mètres sur
+    l'ellipsoïde (champ distance). Pour un simple tableau : nearest_features."""
+    source = get_vector_layer(layer_id)
+    target = get_vector_layer(target_layer_id)
+    params: dict[str, Any] = {"SOURCE": source, "DESTINATION": target,
+                              "METHOD": 0 if mode == "edge" else 1, "NEIGHBORS": k}
+    if max_distance_m is not None:
+        if source.crs().isGeographic():
+            raise ToolError(ErrorCode.CRS_GEOGRAPHIC,
+                            f"max_distance_m impossible en SCR géographique "
+                            f"({source.crs().authid()}) : reprojette {source.name()} "
+                            "(EPSG:2975 / EPSG:4471) ou retire max_distance_m.")
+        params["DISTANCE"] = float(max_distance_m)
+    lines = run_in_memory("native:shortestline", params)
+    # La distance de l'algorithme est planaire, dans le SCR source : remplacée par l'ellipsoïdale.
+    da = distance_area(lines.crs())
+    index = lines.fields().indexOf("distance")
+    distances = {f.id(): length_m(da, f.geometry()) for f in lines.getFeatures()}
+    if index >= 0:
+        lines.dataProvider().changeAttributeValues(
+            {fid: {index: round(d, 2)} for fid, d in distances.items()})
+    result = save_to_project(lines, output_name or f"liaisons_{source.name()}")
+    result.data.update(line_count=len(distances), unit="m",
+                       distance_stats=describe(list(distances.values())))
+    if not distances:
+        result.warnings.append("Aucune liaison : aucune cible"
+                               + (f" à moins de {max_distance_m:g} m." if max_distance_m else "."))
     return result

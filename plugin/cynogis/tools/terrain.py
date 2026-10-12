@@ -5,7 +5,7 @@ import math
 
 import numpy
 from osgeo import gdal, ogr
-from qgis.core import QgsFeature, QgsFields, QgsMemoryProviderUtils
+from qgis.core import QgsApplication, QgsFeature, QgsFields, QgsMemoryProviderUtils
 
 from ..core import terrain as relief
 from ..core.dispatcher import ToolResult
@@ -32,6 +32,16 @@ DERIVATIVES = {
                "0 = nord, sens horaire ; valeurs négatives = terrain plat."),
     "hillshade": ("native:hillshade", "ombrage", "Ombrage destiné à l'habillage cartographique."),
 }
+# Accumulation de flux : pas d'algorithme natif, premier fournisseur installé.
+# (algorithme, paramètre du MNT, paramètres fixes, sortie)
+FLOW_ALGORITHMS = (
+    ("grass:r.watershed", "elevation", {"-a": True}, "accumulation"),   # QGIS >= 3.36
+    ("grass7:r.watershed", "elevation", {"-a": True}, "accumulation"),
+    ("sagang:flowaccumulationtopdown", "ELEVATION", {}, "FLOW"),        # extension SAGA NextGen
+)
+FLOW_NOTE = ("Valeur = nombre de pixels drainés en amont (multiplier par la surface d'un pixel "
+             "pour une surface en m²). Les fortes valeurs dessinent talwegs et ravines : "
+             "seuiller (run_algorithm native:rastercalculator ou classify) pour les extraire.")
 # native:reclassifybytable : RANGE_BOUNDARIES 1 = « min <= valeur < max » ; DATA_TYPE 0 = Byte.
 RANGE_MIN_INCLUSIVE = 1
 BYTE = 0
@@ -58,22 +68,42 @@ def list_slope_classes() -> dict:
 
 @tool(level=Level.CREATE, params={
     "layer_id": Param("string", "MNT raster (layer_id), en SCR métrique."),
-    "derivative": Param("string", "slope (pente, degrés), aspect (exposition) ou hillshade "
-                        "(ombrage).", required=False, default="slope", enum=tuple(DERIVATIVES)),
+    "derivative": Param("string", "slope (pente, degrés), aspect (exposition), hillshade "
+                        "(ombrage) ou flow_accumulation (accumulation de flux, nécessite GRASS "
+                        "ou SAGA dans QGIS).", required=False, default="slope",
+                        enum=(*DERIVATIVES, "flow_accumulation")),
     "z_factor": Param("number", "Facteur vertical ; 1 si altitudes et coordonnées en mètres.",
                       required=False, default=1, minimum=0.0001, maximum=1000),
     "output_name": OUTPUT_NAME,
 })
 def derive_terrain(layer_id: str, derivative: str, z_factor: float,
                    output_name: str | None) -> ToolResult:
-    """Calcule la pente, l'exposition ou l'ombrage d'un MNT (nouveau raster .tif dans
-    mcp_outputs/). Le MNT doit être en SCR métrique (EPSG:2975, EPSG:4471)."""
+    """Calcule la pente, l'exposition, l'ombrage ou l'accumulation de flux d'un MNT (nouveau
+    raster .tif dans mcp_outputs/). Le MNT doit être en SCR métrique (EPSG:2975, EPSG:4471)."""
     layer = _metric_raster(layer_id)
+    if derivative == "flow_accumulation":
+        return _flow_accumulation(layer, output_name or f"accumulation_{layer.name()}")
     algorithm, label, note = DERIVATIVES[derivative]
     result = run_to_project(algorithm, {"INPUT": layer, "Z_FACTOR": float(z_factor)},
                             output_name or f"{label}_{layer.name()}")
     result.data.update({"derivative": derivative, "note": note})
     return result
+
+
+def _flow_accumulation(layer, output_name: str) -> ToolResult:
+    registry = QgsApplication.processingRegistry()
+    for algorithm, dem_param, fixed, output in FLOW_ALGORITHMS:
+        if registry.algorithmById(algorithm) is not None:
+            result = run_to_project(algorithm, {dem_param: layer, **fixed}, output_name,
+                                    extra_outputs=(output,))
+            result.data.update({"derivative": "flow_accumulation", "provider": algorithm,
+                                "note": FLOW_NOTE})
+            return result
+    raise ToolError(ErrorCode.ALGORITHM_NOT_ALLOWED,
+                    "Accumulation de flux indisponible : ni GRASS ni SAGA NextGen n'est actif "
+                    "dans QGIS. Activer l'extension « GRASS GIS provider » (Extensions > Gérer et "
+                    "installer les extensions > Installées) ou installer « SAGA NextGen "
+                    "Provider ».")
 
 
 @tool(level=Level.CREATE, params={
@@ -329,3 +359,48 @@ def elevation_sample(layer_id: str, dem_layer_id: str, altitude_bands: list | No
                                "valeurs prises au centre.")
     return result
 
+
+
+# Indices de native:zonalstatisticsfb (STATISTICS).
+ZONAL_STATS = ("count", "sum", "mean", "median", "stdev", "min", "max", "range", "minority",
+               "majority", "variety", "variance")
+
+
+@tool(level=Level.CREATE, params={
+    "raster_id": Param("string", "Raster à résumer (layer_id) : MNT, NDVI, densité…"),
+    "polygon_layer_id": Param("string", "Polygones dans lesquels calculer (layer_id)."),
+    "band": Param("integer", "Bande du raster.", required=False, default=1, minimum=1),
+    "stats": Param("array", "Statistiques : count (pixels), sum, mean, median, stdev, min, max, "
+                   "range, minority, majority (valeur la moins / plus fréquente, rasters de "
+                   "classes), variety (nombre de valeurs distinctes), variance.",
+                   required=False, default=["count", "mean", "min", "max"], items="string",
+                   items_enum=ZONAL_STATS),
+    "prefix": Param("string", "Préfixe des champs ajoutés, ex. alt_ → alt_mean.",
+                    required=False, default="z_"),
+    "output_name": OUTPUT_NAME,
+})
+def zonal_statistics(raster_id: str, polygon_layer_id: str, band: int, stats: list[str],
+                     prefix: str, output_name: str | None) -> ToolResult:
+    """Statistiques d'un raster dans chaque polygone (nouvelle couche, attributs des
+    polygones conservés) : altitude moyenne par parcelle, NDVI moyen par habitat, classe
+    majoritaire d'une carte d'occupation du sol. Un pixel compte s'il a son centre dans le
+    polygone : un polygone plus petit qu'un pixel peut n'en recevoir aucun."""
+    raster = get_raster_layer(raster_id)
+    polygons = get_vector_layer(polygon_layer_id)
+    if geometry_kind(polygons) != "polygon":
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        f"{polygons.name()} n'est pas une couche de polygones.")
+    if band > raster.bandCount():
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        f"{raster.name()} n'a que {raster.bandCount()} bande(s).")
+    if not stats:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "stats ne peut pas être vide.")
+    result = run_to_project("native:zonalstatisticsfb", {
+        "INPUT": polygons, "INPUT_RASTER": raster, "RASTER_BAND": band,
+        "COLUMN_PREFIX": prefix, "STATISTICS": [ZONAL_STATS.index(s) for s in dict.fromkeys(stats)],
+    }, output_name or f"zonal_{polygons.name()}")
+    result.data["fields_added"] = [prefix + s for s in dict.fromkeys(stats)]
+    if raster.crs() != polygons.crs():
+        result.warnings.append(f"SCR différents ({polygons.crs().authid()} / "
+                               f"{raster.crs().authid()}) : polygones reprojetés à la volée.")
+    return result

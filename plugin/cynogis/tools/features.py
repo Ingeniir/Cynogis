@@ -16,6 +16,7 @@ from .common import (
     group_key,
     rect_to_list,
     require_field,
+    select_ids,
     to_json_value,
 )
 
@@ -157,3 +158,43 @@ def check_geometries(layer_id: str, filter_expression: str | None,
                        "invalid": invalid, "null_or_empty": empty, "multipart": multipart,
                        "error_types": dict(error_types.most_common()), "samples": samples},
                       warnings)
+
+
+_SELECT_MODES = {"replace": Qgis.SelectBehavior.SetSelection,
+                 "add": Qgis.SelectBehavior.AddToSelection,
+                 "remove": Qgis.SelectBehavior.RemoveFromSelection}
+
+
+@tool(level=Level.READ, params={
+    "layer_id": Param("string", "Couche vecteur (layer_id)."),
+    "filter_expression": Param("string", FILTER_HELP, required=False),
+    "feature_ids": Param("array", "Entités à sélectionner, par fid.", required=False,
+                         items="integer"),
+    "mode": Param("string", "replace : remplace la sélection ; add / remove : l'ajoute ou la "
+                  "retire de la sélection actuelle ; clear : vide la sélection.",
+                  required=False, default="replace", enum=(*_SELECT_MODES, "clear")),
+    "zoom": Param("boolean", "Centre la carte sur la sélection.", required=False,
+                  default=False),
+})
+def select_features(layer_id: str, filter_expression: str | None, feature_ids: list | None,
+                    mode: str, zoom: bool) -> dict:
+    """Sélectionne des entités dans QGIS (surlignées sur la carte et dans la table
+    attributaire) par expression ou par fid, pour montrer un résultat à l'utilisateur. Ne
+    modifie pas les données. Avec zoom, cadre la carte sur la sélection."""
+    layer = get_vector_layer(layer_id)
+    if mode == "clear":
+        layer.removeSelection()
+    else:
+        if not filter_expression and not feature_ids:
+            raise ToolError(ErrorCode.INVALID_PARAMS,
+                            "Indique filter_expression ou feature_ids (mode clear pour vider).")
+        ids = select_ids(layer, filter_expression, feature_ids)
+        layer.selectByIds(ids, _SELECT_MODES[mode])
+    count = layer.selectedFeatureCount()
+    if zoom and count:
+        from qgis.utils import iface
+        if iface is not None:
+            iface.mapCanvas().zoomToSelected(layer)
+    return {"layer": layer.name(), "mode": mode, "selected_count": count,
+            "selected_ids": sorted(layer.selectedFeatureIds())[:100],
+            "selection_extent": rect_to_list(layer.boundingBoxOfSelected(), 3) if count else None}

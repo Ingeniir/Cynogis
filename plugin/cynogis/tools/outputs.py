@@ -83,16 +83,19 @@ def run_in_memory(algorithm_id: str, params: dict[str, Any]) -> QgsVectorLayer:
     return _run(algorithm_id, {**params, "OUTPUT": "memory:"})["OUTPUT"]
 
 
-def run_to_project(algorithm_id: str, params: dict[str, Any], output_name: str) -> ToolResult:
-    """Exécute un algorithme Processing ; chaque sortie obligatoire va dans un fichier neuf de
-    mcp_outputs/ puis est ajoutée au projet. Les paramètres de sortie sont imposés ici."""
+def run_to_project(algorithm_id: str, params: dict[str, Any], output_name: str,
+                   extra_outputs: tuple[str, ...] = ()) -> ToolResult:
+    """Exécute un algorithme Processing ; chaque sortie obligatoire (et chaque sortie
+    facultative nommée dans extra_outputs) va dans un fichier neuf de mcp_outputs/ puis est
+    ajoutée au projet. Les paramètres de sortie sont imposés ici."""
     alg = QgsApplication.processingRegistry().algorithmById(algorithm_id)
     if alg is None:
         raise ToolError(ErrorCode.ALGORITHM_NOT_ALLOWED,
                         f"Algorithme {algorithm_id} indisponible dans cette version de QGIS.")
     directory, warnings = output_dir()
     base = clean_name(output_name)
-    destinations = [p for p in alg.destinationParameterDefinitions() if not is_optional(p)]
+    destinations = [p for p in alg.destinationParameterDefinitions()
+                    if not is_optional(p) or p.name() in extra_outputs]
     targets: dict[str, tuple[Path, bool]] = {}
     for param in destinations:
         suffix = _SUFFIXES.get(param.type())

@@ -217,6 +217,65 @@ def extract(layer_id: str, expression: str | None, location_layer_id: str | None
                           name)
 
 
+# Indices de native:joinattributesbylocation et native:joinbylocationsummary (pas de disjoint).
+JOIN_PREDICATES = ("intersects", "contains", "equals", "touches", "overlaps", "within",
+                   "crosses")
+JOIN_METHODS = ("one_to_many", "first", "largest_overlap")
+JOIN_SUMMARIES = ("count", "unique", "min", "max", "range", "sum", "mean", "median", "stddev",
+                  "minority", "majority", "q1", "q3", "iqr", "empty", "filled")
+
+
+@tool(level=Level.CREATE, params={
+    "layer_id": Param("string", "Couche qui reçoit les attributs (layer_id)."),
+    "join_layer_id": Param("string", "Couche dont on récupère les attributs (layer_id)."),
+    "predicates": Param("array", "Relations spatiales entre une entité de layer_id et une "
+                        "entité de join_layer_id (within : layer_id dans join_layer_id).",
+                        required=False, default=["intersects"], items="string",
+                        items_enum=JOIN_PREDICATES),
+    "fields": Param("array", "Champs de join_layer_id à joindre. Absent : tous.",
+                    required=False, items="string"),
+    "method": Param("string", "Sans summaries : one_to_many (une entité par correspondance, "
+                    "entités dupliquées), first (première correspondance), largest_overlap "
+                    "(correspondance de plus grand recouvrement, ex. commune majoritaire "
+                    "d'une parcelle).", required=False, default="first", enum=JOIN_METHODS),
+    "summaries": Param("array", "Mode résumé : statistiques des entités correspondantes par "
+                       "entité (count, sum, mean, majority…), champs suffixés _count, _sum…",
+                       required=False, items="string", items_enum=JOIN_SUMMARIES),
+    "discard_nonmatching": Param("boolean", "Retire les entités sans correspondance.",
+                                 required=False, default=False),
+    "prefix": Param("string", "Préfixe des champs joints (sans summaries).", required=False),
+    "output_name": OUTPUT_NAME,
+})
+def spatial_join(layer_id: str, join_layer_id: str, predicates: list[str],
+                 fields: list[str] | None, method: str, summaries: list[str] | None,
+                 discard_nonmatching: bool, prefix: str | None,
+                 output_name: str | None) -> ToolResult:
+    """Jointure spatiale (nouvelle couche) : chaque entité reçoit les attributs des entités
+    d'une autre couche qui la touchent, la contiennent… (reprojection automatique). Ex. :
+    commune et zonage PLU de chaque parcelle, habitat de chaque observation. Avec summaries :
+    statistiques des entités correspondantes (nombre de points, somme, valeur majoritaire)."""
+    layer = get_vector_layer(layer_id)
+    join = get_vector_layer(join_layer_id)
+    if not predicates:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "predicates ne peut pas être vide.")
+    params = {"INPUT": layer, "JOIN": join,
+              "PREDICATE": [JOIN_PREDICATES.index(p) for p in dict.fromkeys(predicates)],
+              "JOIN_FIELDS": [require_field(join, f) for f in fields or []],
+              "DISCARD_NONMATCHING": discard_nonmatching}
+    name = _name(output_name, "jointure", layer.name())
+    if summaries:
+        params["SUMMARIES"] = [JOIN_SUMMARIES.index(s) for s in dict.fromkeys(summaries)]
+        return run_to_project("native:joinbylocationsummary", params, name)
+    params.update(METHOD=JOIN_METHODS.index(method), PREFIX=prefix or "")
+    result = run_to_project("native:joinattributesbylocation", params, name)
+    unjoinable = result.data["results"].get("UNJOINABLE_COUNT")
+    if unjoinable:
+        result.warnings.append(f"{unjoinable} entité(s) sans correspondance"
+                               + (" retirée(s)." if discard_nonmatching
+                                  else " : champs joints à NULL."))
+    return result
+
+
 @tool(level=Level.CREATE, params={
     "layer_id": Param("string", "Couche en entrée (layer_id)."),
     "overlay_layer_id": Param("string", "Couche de superposition (layer_id)."),

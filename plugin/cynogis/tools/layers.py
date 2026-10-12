@@ -5,6 +5,8 @@ from typing import Any
 
 from qgis.core import (
     Qgis,
+    QgsLayerTreeGroup,
+    QgsLayerTreeLayer,
     QgsMapLayer,
     QgsProject,
     QgsRasterBandStats,
@@ -158,3 +160,67 @@ def get_raster_info(layer_id: str, band: int | None, sample_size: int) -> ToolRe
         result.warnings.append(f"Statistiques estimées sur environ {sample_size} pixels par "
                                "bande : relancer avec sample_size=0 pour des valeurs exactes.")
     return result
+
+
+def _tree(group: QgsLayerTreeGroup) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for child in group.children():
+        if isinstance(child, QgsLayerTreeLayer):
+            items.append({"layer_id": child.layerId(), "name": child.name(),
+                          "visible": child.itemVisibilityChecked()})
+        elif isinstance(child, QgsLayerTreeGroup):
+            items.append({"group": child.name(), "visible": child.itemVisibilityChecked(),
+                          "children": _tree(child)})
+    return items
+
+
+@tool(level=Level.MODIFY, params={
+    "layer_ids": Param("array", "Couches à organiser (layer_id), dans l'ordre voulu.",
+                       items="string"),
+    "group_name": Param("string", "Groupe de destination, créé en tête du panneau s'il "
+                        "n'existe pas. Absent : les couches restent dans leur groupe.",
+                        required=False),
+    "position": Param("string", "top : en haut du groupe (dessinées au-dessus des autres) ; "
+                      "bottom : en bas ; keep : sans déplacement (seulement si pas de "
+                      "group_name).", required=False, default="top",
+                      enum=("top", "bottom", "keep")),
+    "visible": Param("boolean", "Affiche (true) ou masque (false) les couches. Absent : "
+                     "inchangé.", required=False),
+})
+def organize_layers(layer_ids: list[str], group_name: str | None, position: str,
+                    visible: bool | None) -> dict:
+    """Range des couches dans le panneau Couches : groupe (créé au besoin), ordre d'affichage
+    (en haut = dessiné par-dessus) et visibilité. Ne modifie ni les données ni les fichiers.
+    Renvoie l'arborescence mise à jour."""
+    if not layer_ids:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "layer_ids ne peut pas être vide.")
+    if position == "keep" and group_name:
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        "position=keep impossible avec group_name : choisis top ou bottom.")
+    root = QgsProject.instance().layerTreeRoot()
+    target = None
+    if group_name:
+        target = root.findGroup(group_name) or root.insertGroup(0, group_name)
+    ids = list(dict.fromkeys(layer_ids))
+    for layer_id in ids:
+        layer = get_layer(layer_id)  # LAYER_NOT_FOUND explicite
+        if root.findLayer(layer_id) is None:
+            raise ToolError(ErrorCode.INVALID_PARAMS,
+                            f"{layer.name()} n'apparaît pas dans le panneau Couches.")
+    for rank, layer_id in enumerate(ids):
+        node = root.findLayer(layer_id)
+        if position != "keep":
+            parent = node.parent()
+            destination = target or parent
+            clone = node.clone()
+            if position == "top":
+                destination.insertChildNode(rank, clone)
+            else:
+                destination.addChildNode(clone)
+            parent.removeChildNode(node)
+            node = clone
+        if visible is not None:
+            node.setItemVisibilityChecked(visible)
+    if target is not None and visible:
+        target.setItemVisibilityChecked(True)
+    return {"moved": ids, "group": group_name, "position": position, "tree": _tree(root)}
