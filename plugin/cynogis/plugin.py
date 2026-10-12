@@ -16,6 +16,7 @@ from .core.policy import PermissionPolicy
 from .core.registry import Level, ToolRegistry
 from .tools import (
     algorithms,
+    atlas,
     coefficients,
     density,
     editing,
@@ -47,7 +48,7 @@ MENU = "&Cynogis"
 TOOL_MODULES = (system, layers, features, measures, overlaps, geoprocessing, algorithms,
                 editing, shapefiles, coefficients, landscape, terrain, styling, export,
                 proximity, referentials, webservices, fielddata, taxref, habref,
-                stakes, density, sampling)
+                stakes, density, sampling, atlas)
 logger = logging.getLogger("cynogis")
 
 
