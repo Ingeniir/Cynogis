@@ -10,6 +10,7 @@ from qgis.core import QgsExpression, QgsFeature, QgsFeatureRequest, QgsGeometry
 from ..core import landscape as nomenclature
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.metrics import elongation, shape_index
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.stats import describe, describe_groups, to_float
@@ -186,6 +187,104 @@ def descriptive_stats(layer_id: str, field: str | None, expression: str | None,
         if len(rows) > max_groups:
             warnings.append(f"{len(rows)} groupes : seuls les {max_groups} premiers sont renvoyés.")
     return ToolResult(data, warnings)
+
+
+def _r4(value: float | None) -> float | None:
+    return None if value is None else round(value, 4)
+
+
+@tool(level=Level.READ, params={
+    "layer_id": Param("string", "Couche de polygones (layer_id)."),
+    "indices": Param("array", "Indices : gravelius (compacité, 1 = disque, augmente avec le "
+                     "découpage), elongation (0 à 1, 1 = trapu, proche de 0 = bande étroite), "
+                     "coverage_rate (% de la référence couvert), density (entités par ha de la "
+                     "référence), cv (variabilité des surfaces).",
+                     items="string",
+                     items_enum=("gravelius", "elongation", "coverage_rate", "density", "cv")),
+    "reference_layer_id": Param("string", "Couche de référence (layer_id), ex. aire d'étude ou "
+                                "parcelle : requise pour coverage_rate et density.",
+                                required=False),
+    "id_field": Param("string", "Champ identifiant renvoyé avec chaque entité.", required=False),
+    "filter_expression": Param("string", FILTER_HELP, required=False),
+    "limit": Param("integer", "Nombre d'entités renvoyées.", required=False, default=50,
+                   minimum=0, maximum=500),
+    "offset": Param("integer", "Décalage de pagination.", required=False, default=0, minimum=0),
+})
+def shape_indices(layer_id: str, indices: list[str], reference_layer_id: str | None,
+                  id_field: str | None, filter_expression: str | None, limit: int,
+                  offset: int) -> ToolResult:
+    """Indices de forme de polygones : compacité de Gravelius et allongement par entité (avec
+    surface et périmètre ellipsoïdaux), statistiques globales de chaque indice, CV des surfaces,
+    taux de couverture et densité par rapport à une couche de référence. Ex. : repérer les
+    parcelles en lanière, comparer la compacité des bosquets. Paginé : has_more, offset."""
+    layer = get_vector_layer(layer_id)
+    if geometry_kind(layer) != "polygon":
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        f"{layer.name()} n'est pas une couche de polygones.")
+    indices = list(dict.fromkeys(indices))
+    if not indices:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Indique au moins un indice.")
+    needs_ref = sorted({"coverage_rate", "density"} & set(indices))
+    if needs_ref and not reference_layer_id:
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        f"{', '.join(needs_ref)} demandent reference_layer_id.")
+    id_name = require_field(layer, id_field) if id_field else None
+    da = distance_area(layer.crs())
+
+    rows: list[dict[str, Any]] = []
+    geoms: list[QgsGeometry] = []
+    request = feature_request(layer, filter_expression, [id_name] if id_name else [])
+    for feature, geom in iter_geometries(layer, request):
+        area, perimeter = area_m2(da, geom), perimeter_m(da, geom)
+        row: dict[str, Any] = {"fid": feature.id()}
+        if id_name:
+            row[id_name] = to_json_value(feature[id_name])
+        row.update(area_m2=round(area, 2), perimeter_m=round(perimeter, 2))
+        if "gravelius" in indices:
+            row["gravelius"] = _r4(shape_index(area, perimeter))
+        if "elongation" in indices:
+            _, _, _, width, height = geom.orientedMinimumBoundingBox()
+            row["elongation"] = _r4(elongation(width, height))
+        rows.append(row)
+        if needs_ref:
+            geoms.append(geom)
+
+    summary: dict[str, Any] = {}
+    for key in ("gravelius", "elongation"):
+        if key in indices:
+            summary[key] = describe([r[key] for r in rows if r[key] is not None])
+    if "cv" in indices:
+        summary["cv_area"] = describe([r["area_m2"] for r in rows])["cv"]
+    warnings: list[str] = []
+    if needs_ref:
+        ref = get_vector_layer(reference_layer_id)
+        ref_geoms = [g for _, g in iter_geometries(ref, feature_request(ref, attributes=[]),
+                                                   layer.crs())]
+        if not ref_geoms:
+            raise ToolError(ErrorCode.INVALID_PARAMS,
+                            f"{ref.name()} : aucune géométrie de référence.")
+        # ponytail: union en mémoire de toute la couche, découper par tuiles si très grosse couche
+        ref_union = QgsGeometry.unaryUnion(ref_geoms)
+        ref_area = area_m2(da, ref_union)
+        summary["reference_area_ha"] = round(ref_area / 10_000, 4)
+        if "coverage_rate" in indices:
+            covered = QgsGeometry.unaryUnion(geoms).intersection(ref_union) if geoms else None
+            if geoms and (covered is None or covered.isNull()):
+                warnings.append("Union des géométries impossible : lance check_geometries.")
+            covered_m2 = area_m2(da, covered) if covered and not covered.isNull() else 0.0
+            summary["coverage_rate_pct"] = (round(100 * covered_m2 / ref_area, 2)
+                                            if ref_area else None)
+        if "density" in indices:
+            inside = sum(1 for g in geoms if g.intersects(ref_union))
+            summary["density_per_ha"] = _r4(inside * 10_000 / ref_area) if ref_area else None
+            summary["features_in_reference"] = inside
+    if "elongation" in indices and layer.crs().isGeographic():
+        warnings.append("Allongement calculé en SCR géographique (degrés) : valeurs déformées, "
+                        "reprojette la couche (EPSG:2975 / EPSG:4471).")
+    return ToolResult({
+        "feature_count": len(rows), "summary": summary,
+        "features": rows[offset:offset + limit], "has_more": offset + limit < len(rows),
+    }, warnings)
 
 
 HABITAT_HEADERS = ["Habitat", "Libellé", "Nb de polygones", "Surface (ha)",
