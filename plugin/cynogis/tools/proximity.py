@@ -40,6 +40,7 @@ from .common import (
     length_m,
     make_field,
     perimeter_m,
+    prepare_expression,
     require_field,
     to_json_value,
 )
@@ -185,20 +186,25 @@ def count_points_in_polygon(polygon_layer_id: str, point_layer_id: str,
     }, warnings)
 
 
-def _grid(extent: QgsRectangle, size: float):
-    """Mailles carrées alignées sur les multiples de size, couvrant l'emprise."""
-    x0, y0 = math.floor(extent.xMinimum() / size), math.floor(extent.yMinimum() / size)
-    x1 = max(math.ceil(extent.xMaximum() / size), x0 + 1)
-    y1 = max(math.ceil(extent.yMaximum() / size), y0 + 1)
-    if (x1 - x0) * (y1 - y0) > MAX_GRID_CELLS:
+def _grid(geometries: dict[int, QgsGeometry], size: float):
+    """(id, maille, fids des points) pour chaque maille carrée alignée sur les multiples de
+    size, sur l'emprise des points. Chaque point compte dans une seule maille (bords ouest et
+    sud inclus), même s'il tombe sur une limite."""
+    cells: dict[tuple[int, int], list[int]] = {}
+    for fid, geometry in geometries.items():
+        point = geometry.boundingBox().center()
+        key = (math.floor(point.x() / size), math.floor(point.y() / size))
+        cells.setdefault(key, []).append(fid)
+    xs, ys = [k[0] for k in cells], [k[1] for k in cells]
+    if (max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1) > MAX_GRID_CELLS:
         raise ToolError(ErrorCode.INVALID_PARAMS, f"Plus de {MAX_GRID_CELLS} mailles : "
                         "augmente grid_size_m ou filtre les points.")
-    for i in range(x0, x1):
-        for j in range(y0, y1):
+    for i in range(min(xs), max(xs) + 1):
+        for j in range(min(ys), max(ys) + 1):
             yield (f"{i * size:.0f}_{j * size:.0f}",
                    QgsGeometry.fromRect(QgsRectangle(i * size, j * size,
-                                                     (i + 1) * size, (j + 1) * size)))
-
+                                                     (i + 1) * size, (j + 1) * size)),
+                   cells.get((i, j), []))
 
 @tool(level=Level.CREATE, params={
     "point_layer_id": Param("string", "Couche des observations (layer_id), ex. sortie de "
@@ -211,27 +217,51 @@ def _grid(extent: QgsRectangle, size: float):
                          "taxon.", required=False),
     "count_field": Param("string", "Champ de l'effectif des points (somme ; vide = 0), ex. "
                          "effectif.", required=False),
+    "protected_expression": Param("string", "Expression QGIS vraie pour une observation "
+                                  "d'espèce protégée, ex. \"taxon\" IN ('Tec-tec', 'Gecko "
+                                  "vert de Manapany') ou \"statut\" = 'PN'. Requiert "
+                                  "taxon_field.", required=False),
+    "invasive_expression": Param("string", "Expression QGIS vraie pour une espèce exotique "
+                                 "envahissante (EEE), même forme. Requiert taxon_field.",
+                                 required=False),
     "point_filter": Param("string", "Filtre sur les points. " + FILTER_HELP, required=False),
     "output_name": OUTPUT_NAME,
 })
 def count_observations(point_layer_id: str, polygon_layer_id: str | None,
                        grid_size_m: float | None, taxon_field: str | None,
-                       count_field: str | None,
+                       count_field: str | None, protected_expression: str | None,
+                       invasive_expression: str | None,
                        point_filter: str | None, output_name: str | None) -> ToolResult:
     """Couche de synthèse des observations par polygone d'habitat ou par maille, à
     cartographier : nb_obs, richesse (taxons distincts), effectif (somme), taxons (liste),
-    plus les champs des polygones d'habitat. Pour un simple tableau sans couche :
-    count_points_in_polygon."""
+    plus les champs des polygones d'habitat. Avec protected_expression / invasive_expression :
+    nb_prot, sp_prot, nb_eee, sp_eee (taxons protégés / EEE distincts et leur liste). Les
+    listes d'espèces ne sont pas fournies par Cynogis : demande-les à l'utilisateur (arrêtés
+    de protection, liste EEE du territoire). Mailles INPN 10 km : grid_size_m=10000 en
+    EPSG:2975 / EPSG:4471. Pour un simple tableau sans couche : count_points_in_polygon."""
     if bool(polygon_layer_id) == bool(grid_size_m):
         raise ToolError(ErrorCode.INVALID_PARAMS, "Indique soit polygon_layer_id, soit "
                         "grid_size_m.")
     points = _layer(point_layer_id, "point")
     taxon_field = _field(points, taxon_field)
     count_field = _field(points, count_field)
+    statuses = {key: text for key, text in (("prot", protected_expression),
+                                            ("eee", invasive_expression)) if text}
+    if statuses and not taxon_field:
+        raise ToolError(ErrorCode.INVALID_PARAMS, "protected_expression et "
+                        "invasive_expression requièrent taxon_field.")
+    flagged: dict[str, set[int]] = {}
+    for key, text in statuses.items():
+        expression, context = prepare_expression(text, points, f"{key}_expression")
+        flagged[key] = set()
+        for feature in points.getFeatures(feature_request(points, point_filter, None, False)):
+            context.setFeature(feature)
+            if expression.evaluate(context):
+                flagged[key].add(feature.id())
     if polygon_layer_id:
         polygons = _layer(polygon_layer_id, "polygon")
         crs, base_fields = polygons.crs(), polygons.fields()
-        cells: Any = iter_geometries(polygons, feature_request(polygons))
+        cells = iter_geometries(polygons, feature_request(polygons))
     else:
         crs, base_fields = points.crs(), QgsFields()
         if crs.isGeographic():
@@ -242,22 +272,21 @@ def count_observations(point_layer_id: str, polygon_layer_id: str | None,
                                                   taxon_field)
     if not geometries:
         raise ToolError(ErrorCode.INVALID_PARAMS, "Aucune observation à compter.")
-    if grid_size_m:
-        extent = QgsRectangle()
-        for geometry in geometries.values():
-            extent.combineExtentWith(geometry.boundingBox())
-        cells = _grid(extent, float(grid_size_m))
+    units = (_grid(geometries, float(grid_size_m)) if grid_size_m
+             else _point_hits(cells, index, geometries))
 
     fields = QgsFields(base_fields)
     added = {}
     for name, type_name in (("nb_obs", "integer"), ("richesse", "integer"),
-                            ("effectif", "real"), ("taxons", "string")):
+                            ("effectif", "real"), ("taxons", "string"),
+                            *((f"{prefix}_{key}", kind) for key in statuses
+                              for prefix, kind in (("nb", "integer"), ("sp", "string")))):
         added[name] = unique_field_name(name, fields.names())
         fields.append(make_field(added[name], type_name))
     memory = QgsMemoryProviderUtils.createMemoryLayer("observations", fields,
                                                       Qgis.WkbType.MultiPolygon, crs)
     features, inside = [], set()
-    for item, polygon, hits in _point_hits(cells, index, geometries):
+    for item, polygon, hits in units:
         inside.update(hits)
         taxa = sorted({str(attributes[h][1]) for h in hits if attributes[h][1] is not None})
         feature = QgsFeature(fields)
@@ -273,6 +302,11 @@ def count_observations(point_layer_id: str, polygon_layer_id: str | None,
         feature[added["effectif"]] = (sum(attributes[h][0] or 0.0 for h in hits)
                                       if count_field else None)
         feature[added["taxons"]] = "; ".join(taxa) if taxon_field else None
+        for key, fids in flagged.items():
+            special = sorted({str(attributes[h][1]) for h in hits
+                              if h in fids and attributes[h][1] is not None})
+            feature[added[f"nb_{key}"]] = len(special)
+            feature[added[f"sp_{key}"]] = "; ".join(special)
         features.append(feature)
     if not memory.dataProvider().addFeatures(features):
         raise ToolError(ErrorCode.INTERNAL_ERROR, "Création de la couche impossible.",
@@ -288,6 +322,8 @@ def count_observations(point_layer_id: str, polygon_layer_id: str | None,
         "observations": len(geometries), "observations_inside": len(inside),
         "taxa_total": len(all_taxa) if taxon_field else None,
         "max_richness": max(richness, default=None), "fields": added,
+        "flagged_observations": {key: len(fids & set(geometries))
+                                 for key, fids in flagged.items()},
         "next_step": f"apply_graduated_style sur {added['richesse']} ou {added['nb_obs']}.",
     })
     if len(geometries) - len(inside):
