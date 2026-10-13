@@ -81,3 +81,9 @@ def test_table_to_rows():
 
 def test_table_to_rows_vide():
     assert table_to_rows([])["rows"] == []
+
+
+def test_image_relative_et_markdown():
+    section = [{"heading": "Carte", "image": r"dossier\carte.png", "caption": "Vue"}]
+    assert normalize_sections(section)[0]["image"] == "dossier/carte.png"
+    assert "![Vue](dossier/carte.png)" in build_markdown("Titre", section)

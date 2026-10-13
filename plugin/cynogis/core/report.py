@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as _datetime
 import html
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from .classify import format_number
 
@@ -51,6 +52,11 @@ def normalize_table(table: Mapping) -> dict:
     return {"headers": [str(header) for header in headers], "rows": values}
 
 
+def _image_src(path: str) -> str:
+    """Chemin absolu → URI file:// (lisible par le navigateur et Qt) ; relatif inchangé."""
+    return Path(path).as_uri() if Path(path).is_absolute() else path.replace("\\", "/")
+
+
 def normalize_sections(sections: Sequence[Mapping]) -> list[dict]:
     """Valide les sections du rapport."""
     if len(sections or []) > MAX_SECTIONS:
@@ -66,6 +72,9 @@ def normalize_sections(sections: Sequence[Mapping]) -> list[dict]:
         }
         if section.get("table"):
             entry["table"] = normalize_table(section["table"])
+        if section.get("image"):
+            entry["image"] = _image_src(str(section["image"]))
+            entry["caption"] = str(section.get("caption") or "")
         normalized.append(entry)
     return normalized
 
@@ -103,6 +112,8 @@ def build_markdown(
                     "| " + " | ".join(_escape_cell(cell, decimals) for cell in row) + " |"
                 )
             parts.append("")
+        if section.get("image"):
+            parts.extend([f"![{section['caption']}]({section['image']})", ""])
     return "\n".join(parts).rstrip() + "\n"
 
 
@@ -160,6 +171,12 @@ def build_html(
                 )
                 parts.append("</tr>")
             parts.append("</tbody></table>")
+        if section.get("image"):
+            # largeur fixe : Qt (PDF) ignore les pourcentages ; 640 px ≈ largeur utile A4
+            parts.append(f'<p><img src="{escape(section["image"])}" width="640" '
+                         'style="max-width:100%"></p>')
+            if section["caption"]:
+                parts.append(f'<p class="meta">{escape(section["caption"])}</p>')
     parts.append("</body></html>")
     return "\n".join(parts)
 
