@@ -17,8 +17,8 @@ from qgis.core import (
     QgsProject,
     QgsVectorFileWriter,
 )
-from qgis.PyQt.QtCore import QSize
-from qgis.PyQt.QtGui import QColor
+from qgis.PyQt.QtCore import QMarginsF, QSize, QUrl
+from qgis.PyQt.QtGui import QColor, QPageLayout, QPageSize, QPdfWriter, QTextDocument
 
 from ..core.colors import parse_color
 from ..core.dispatcher import ToolResult
@@ -40,7 +40,7 @@ from .common import (
 from .outputs import output_dir, run_in_memory
 
 TABLE_FORMATS = {"csv": (".csv", None), "xlsx": (".xlsx", "XLSX"), "ods": (".ods", "ODS")}
-REPORT_FORMATS = {"html": ".html", "markdown": ".md"}
+REPORT_FORMATS = {"pdf": ".pdf", "html": ".html", "markdown": ".md"}
 SEPARATORS = {";": ";", ",": ",", "tabulation": "\t"}
 MAX_EXPORT_ROWS = 100_000
 
@@ -170,31 +170,56 @@ def export_table(layer_id: str | None, table: dict | None, fields: list | None,
                        "row_count": row_count}, warnings, [str(path)])
 
 
+def write_pdf(html: str, path: Path) -> None:
+    """PDF A4 rendu par Qt à partir du HTML de core/report.py (pas de dépendance externe)."""
+    writer = QPdfWriter(str(path))
+    writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+    writer.setPageMargins(QMarginsF(18, 18, 18, 18), QPageLayout.Unit.Millimeter)
+    writer.setTitle(path.stem)
+    document = QTextDocument()
+    document.setBaseUrl(QUrl.fromLocalFile(str(path.parent) + "/"))  # images relatives
+    document.setHtml(html)
+    # PyQt5 : print_ ; PyQt6 : print
+    (getattr(document, "print_", None) or document.print)(writer)
+    del writer  # termine le fichier
+    if not path.is_file():
+        raise ToolError(ErrorCode.WRITE_FAILED, f"PDF non écrit : {path}")
+
+
+def write_document(content: str, path: Path) -> None:
+    """Écrit le rapport : PDF (content est alors du HTML) ou texte selon l'extension."""
+    try:
+        if path.suffix == ".pdf":
+            write_pdf(content, path)
+        else:
+            path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise ToolError(ErrorCode.WRITE_FAILED, f"Écriture impossible : {exc}") from exc
+
+
 @tool(level=Level.CREATE, params={
     "title": Param("string", "Titre de la note."),
     "sections": Param("array", 'Sections : [{"heading": "Contexte", "text": "...", "bullets": '
-                      '["..."], "table": {"headers": [...], "rows": [[...]]}}]. Reprends les '
+                      '["..."], "table": {"headers": [...], "rows": [[...]]}, "image": '
+                      '"<chemin PNG de export_map_image>", "caption": "..."}]. Reprends les '
                       "chiffres renvoyés par les outils, sans les réécrire.", items="object"),
     "metadata": Param("object", 'En-tête, ex. {"Commune": "Saint-Paul", "Maître d\'ouvrage": '
                       '"..."}.', required=False),
-    "format": Param("string", "html (imprimable) ou markdown.", required=False, default="html",
-                    enum=tuple(REPORT_FORMATS)),
+    "format": Param("string", "pdf, html (imprimable) ou markdown.", required=False,
+                    default="html", enum=tuple(REPORT_FORMATS)),
     "output_name": Param("string", "Nom du fichier (défaut : titre).", required=False),
 })
 def write_report(title: str, sections: list, metadata: dict | None, format: str,
                  output_name: str | None) -> ToolResult:
     """Rédige une note de synthèse (mcp_outputs/) à partir des résultats calculés : sections,
     listes et tableaux, nombres formatés à la française."""
-    builder = build_html if format == "html" else build_markdown
+    builder = build_markdown if format == "markdown" else build_html
     try:
         content = builder(title, sections, metadata or {})
     except ValueError as exc:
         raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
     path, warnings = _output_path(output_name or title, REPORT_FORMATS[format])
-    try:
-        path.write_text(content, encoding="utf-8")
-    except OSError as exc:
-        raise ToolError(ErrorCode.WRITE_FAILED, f"Écriture impossible : {exc}") from exc
+    write_document(content, path)
     return ToolResult({"path": str(path), "format": format, "section_count": len(sections),
                        "characters": len(content)}, warnings, [str(path)])
 
@@ -242,22 +267,28 @@ def export_map_image(output_name: str | None, extent_layer_id: str | None, width
     if extent.isEmpty():
         raise ToolError(ErrorCode.INVALID_PARAMS, "Emprise vide.")
     extent.scale(1.0 + float(margin_percent) / 100.0)
+    path, warnings = _output_path(output_name or "carte", ".png")
+    render_map(project, layers, destination, extent, QSize(width, height), background_color,
+               path)
+    return ToolResult({"path": str(path), "width": width, "height": height,
+                       "layer_count": len(layers)}, warnings, [str(path)])
 
+
+def render_map(project: QgsProject, layers: list, crs: QgsCoordinateReferenceSystem,
+               extent, size: QSize, background: QColor, path: Path) -> None:
+    """Rendu PNG des couches (la première dessinée au-dessus) sur l'emprise donnée."""
     settings = QgsMapSettings()
     settings.setLayers(layers)
-    settings.setDestinationCrs(destination)
+    settings.setDestinationCrs(crs)
     settings.setTransformContext(project.transformContext())
     settings.setExtent(extent)
-    settings.setOutputSize(QSize(width, height))
-    settings.setBackgroundColor(background_color)
+    settings.setOutputSize(size)
+    settings.setBackgroundColor(background)
     job = QgsMapRendererParallelJob(settings)
     job.start()
     job.waitForFinished()
-    path, warnings = _output_path(output_name or "carte", ".png")
     if not job.renderedImage().save(str(path), "PNG"):
         raise ToolError(ErrorCode.WRITE_FAILED, f"Image non enregistrée : {path}")
-    return ToolResult({"path": str(path), "width": width, "height": height,
-                       "layer_count": len(layers)}, warnings, [str(path)])
 
 
 def _project_target(path: str | None) -> str:

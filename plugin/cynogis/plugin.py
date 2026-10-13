@@ -30,6 +30,7 @@ from .tools import (
     layers,
     measures,
     overlaps,
+    project_audit,
     proximity,
     pyqgis,
     referentials,
@@ -52,7 +53,7 @@ TOOL_MODULES = (system, layers, features, measures, overlaps, geoprocessing, alg
                 editing, shapefiles, coefficients, landscape, terrain, styling, export,
                 proximity, referentials, webservices, fielddata, taxref, habref,
                 stakes, density, sampling, atlas, zoning,
-                impacts, pyqgis)
+                impacts, pyqgis, project_audit)
 logger = logging.getLogger("cynogis")
 
 

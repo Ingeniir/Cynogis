@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from qgis.core import Qgis, QgsGeometry
+from qgis.core import Qgis, QgsFeatureRequest, QgsGeometry, QgsVectorLayer
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
@@ -125,10 +125,23 @@ def check_geometries(layer_id: str, filter_expression: str | None,
     layer = get_vector_layer(layer_id)
     if geometry_kind(layer) in ("none", "unknown"):
         raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'a pas de géométrie.")
+    data = geometry_report(layer, feature_request(layer, filter_expression, [], True),
+                           sample_size)
+    warnings = []
+    if data["invalid"] or data["null_or_empty"]:
+        warnings.append(f"{data['invalid']} géométrie(s) invalide(s) et {data['null_or_empty']} "
+                        "nulle(s) ou vide(s) : à corriger avant toute superposition "
+                        "(intersection, union…).")
+    return ToolResult(data, warnings)
+
+
+def geometry_report(layer: QgsVectorLayer, request: QgsFeatureRequest,
+                    sample_size: int) -> dict[str, Any]:
+    """Comptage des géométries nulles, invalides (GEOS) et multi-parties d'une couche."""
     checked = empty = invalid = multipart = 0
     error_types: Counter[str] = Counter()
     samples: list[dict[str, Any]] = []
-    for feature in layer.getFeatures(feature_request(layer, filter_expression, [], True)):
+    for feature in layer.getFeatures(request):
         checked += 1
         geom = feature.geometry()
         if geom.isNull() or geom.isEmpty():
@@ -150,14 +163,9 @@ def check_geometries(layer_id: str, filter_expression: str | None,
                 where = errors[0].where()
                 sample["location"] = [round(where.x(), 2), round(where.y(), 2)]
             samples.append(sample)
-    warnings = []
-    if invalid or empty:
-        warnings.append(f"{invalid} géométrie(s) invalide(s) et {empty} nulle(s) ou vide(s) : "
-                        "à corriger avant toute superposition (intersection, union…).")
-    return ToolResult({"checked": checked, "valid": checked - invalid - empty,
-                       "invalid": invalid, "null_or_empty": empty, "multipart": multipart,
-                       "error_types": dict(error_types.most_common()), "samples": samples},
-                      warnings)
+    return {"checked": checked, "valid": checked - invalid - empty,
+            "invalid": invalid, "null_or_empty": empty, "multipart": multipart,
+            "error_types": dict(error_types.most_common()), "samples": samples}
 
 
 _SELECT_MODES = {"replace": Qgis.SelectBehavior.SetSelection,
