@@ -7,7 +7,7 @@ from cynogis.bridge.protocol import PROTOCOL_VERSION, Response, decode_request
 from cynogis.core.audit import AuditLog
 from cynogis.core.dispatcher import Dispatcher, ToolResult
 from cynogis.core.errors import ErrorCode, ToolError
-from cynogis.core.jobs import AlgCall, Pacer, Pause, run_now
+from cynogis.core.jobs import AlgCall, Fetch, Pacer, Pause, run_now
 from cynogis.core.registry import Level, ToolRegistry, tool
 from cynogis.core.schema import Param
 
@@ -81,6 +81,14 @@ def boucle(n):
 
 
 @tool(level=Level.READ)
+def telechargement():
+    """Téléchargement puis traitement."""
+    fields, features = yield Fetch("https://exemple/wfs", None, "téléchargement de rnn",
+                                   geojson=True)
+    return {"champs": fields, "entites": len(features)}
+
+
+@tool(level=Level.READ)
 def lecture():
     """Lecture seule."""
     return "ok"
@@ -88,7 +96,7 @@ def lecture():
 
 def make(tmp_path, executor=None):
     registry = ToolRegistry()
-    registry.register(calcul, sans_etape, erreur_avant, boucle, lecture)
+    registry.register(calcul, sans_etape, erreur_avant, boucle, telechargement, lecture)
     executor = executor or FakeExecutor()
     audit = AuditLog(tmp_path)
     return Dispatcher(registry, audit=audit, executor=executor), executor, audit
@@ -187,6 +195,23 @@ def test_annulation_pendant_une_pause(tmp_path):
     ex.resume()  # la reprise programmée arrive après l'annulation : ignorée
     assert not ex.paused
     assert d.dispatch(_req("get_job_status", job_id=job_id)).error["code"] == "CANCELLED"
+
+
+def test_telechargement(tmp_path):
+    d, ex, _ = make(tmp_path)
+    resp = d.dispatch(_req("telechargement"))
+    assert resp.data["algorithm"] == "téléchargement de rnn" and resp.data["step"] == 1
+    assert isinstance(ex.started[0][0], Fetch)
+    ex.finish((["nom"], [1, 2, 3]))
+    final = d.dispatch(_req("get_job_status", job_id=resp.job_id))
+    assert final.data == {"champs": ["nom"], "entites": 3}
+
+
+def test_echec_reseau(tmp_path):
+    d, ex, _ = make(tmp_path)
+    job_id = d.dispatch(_req("telechargement")).job_id
+    ex.finish(error=ToolError(ErrorCode.NETWORK_ERROR, "Service injoignable"))
+    assert d.dispatch(_req("get_job_status", job_id=job_id)).error["code"] == "NETWORK_ERROR"
 
 
 def test_pacer_ne_cede_qu_apres_l_intervalle():

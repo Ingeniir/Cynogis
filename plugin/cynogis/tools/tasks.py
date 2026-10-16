@@ -1,4 +1,4 @@
-"""Exécuteur des étapes Processing des jobs (core/jobs.py).
+"""Exécuteur des étapes des jobs (core/jobs.py) : algorithmes Processing et téléchargements.
 
 Par défaut, l'algorithme tourne dans une QgsProcessingAlgRunnerTask (thread de QGIS, visible
 et annulable dans la barre des tâches) : l'interface reste utilisable. Préparation et
@@ -7,6 +7,9 @@ post-traitement restent sur le thread principal (executed y est émis).
 Repli sur le thread principal, avec l'interface repeinte pendant le calcul (saisies ignorées) :
 - algorithme marqué NoThreading par QGIS ;
 - couche d'entrée en cours d'édition (la lire depuis un autre thread risque la corruption).
+
+Téléchargement (Fetch) : QgsBlockingNetworkRequest (proxy, certificats, authcfg de
+l'utilisateur) dans une QgsTask, décodage GeoJSON compris.
 """
 from __future__ import annotations
 
@@ -20,22 +23,28 @@ from qgis import processing
 from qgis.core import (
     Qgis,
     QgsApplication,
+    QgsBlockingNetworkRequest,
+    QgsFeedback,
+    QgsJsonUtils,
     QgsMapLayer,
     QgsProcessingAlgRunnerTask,
     QgsProcessingContext,
     QgsProcessingException,
     QgsProcessingFeedback,
     QgsProject,
+    QgsTask,
     QgsVectorLayer,
 )
-from qgis.PyQt.QtCore import QCoreApplication, QTimer
+from qgis.PyQt.QtCore import QCoreApplication, QTimer, QUrl
+from qgis.PyQt.QtNetwork import QNetworkRequest
 
 from ..compat import EXCLUDE_USER_INPUT
 from ..core.errors import ErrorCode, ToolError
-from ..core.jobs import AlgCall, Done
+from ..core.jobs import AlgCall, Done, Fetch
 
 PUMP_INTERVAL_S = 0.1  # repli synchrone : repeindre l'interface au plus toutes les 100 ms
 logger = logging.getLogger("cynogis.tasks")
+_NO_ERROR = getattr(QgsBlockingNetworkRequest, "ErrorCode", QgsBlockingNetworkRequest).NoError
 
 
 @dataclass(eq=False)
@@ -53,7 +62,12 @@ class ProcessingExecutor:
         # executed, même après une annulation.
         self._active: set[_Handle] = set()
 
-    def start(self, step: AlgCall, done: Done) -> _Handle:
+    def start(self, step: AlgCall | Fetch, done: Done) -> _Handle | _FetchTask:
+        if isinstance(step, Fetch):
+            task = _FetchTask(step, done, self._active.discard)
+            self._active.add(task)  # garder l'objet Python de la tâche jusqu'à finished
+            QgsApplication.taskManager().addTask(task)
+            return task
         algorithm = QgsApplication.processingRegistry().createAlgorithmById(step.algorithm_id)
         if algorithm is None:
             raise ToolError(ErrorCode.ALGORITHM_NOT_ALLOWED,
@@ -75,16 +89,16 @@ class ProcessingExecutor:
             QgsApplication.taskManager().addTask(task)
         return handle
 
-    def progress(self, handle: _Handle | None) -> float:
+    def progress(self, handle: _Handle | _FetchTask | None) -> float:
         return float(handle.feedback.progress()) if handle is not None else 0.0
 
     def pause(self, resume: Callable[[], None]) -> None:
         QTimer.singleShot(0, resume)  # après l'affichage et les requêtes en attente
 
-    def cancel(self, handle: _Handle | None) -> None:
+    def cancel(self, handle: _Handle | _FetchTask | None) -> None:
         if handle is not None and not handle.cancelled:
             handle.cancelled = True
-            handle.feedback.cancel()  # la tâche s'arrête et émet executed(False)
+            handle.feedback.cancel()  # la tâche s'arrête et se termine en échec
 
     # --- Fin d'étape (thread principal) ----------------------------------------------------
     def _run_here(self, handle: _Handle) -> None:
@@ -151,3 +165,53 @@ def _input_layers(params: dict[str, Any]) -> Iterator[QgsMapLayer]:
                 yield item
             elif isinstance(item, str) and (layer := project.mapLayer(item)) is not None:
                 yield layer
+
+
+class _FetchTask(QgsTask):
+    """GET hors du thread principal ; finished (thread principal) rappelle le job."""
+
+    def __init__(self, step: Fetch, done: Done, forget: Callable[[Any], None]) -> None:
+        super().__init__(f"Cynogis : {step.label}", QgsTask.Flag.CanCancel)
+        self.step, self.done, self.forget = step, done, forget
+        self.feedback = QgsFeedback()
+        self.cancelled = False  # annulé par le job : ne plus le rappeler
+        self.result: Any = None
+        self.error = ""
+
+    def run(self) -> bool:
+        request = QgsBlockingNetworkRequest()
+        if self.step.authcfg:
+            request.setAuthCfg(self.step.authcfg)
+        if request.get(QNetworkRequest(QUrl(self.step.url)), False, self.feedback) != _NO_ERROR:
+            self.error = request.errorMessage()
+            return False
+        content = bytes(request.reply().content())
+        if not self.step.geojson:
+            self.result = content
+            return True
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            self.error = f"réponse illisible ({exc})"
+            return False
+        fields = QgsJsonUtils.stringToFields(text)
+        self.result = (fields, QgsJsonUtils.stringToFeatureList(text, fields))
+        return True
+
+    def cancel(self) -> None:  # bouton Annuler de la barre des tâches
+        self.feedback.cancel()
+        super().cancel()
+
+    def finished(self, success: bool) -> None:
+        self.forget(self)
+        if self.cancelled:
+            return
+        if self.feedback.isCanceled():
+            self.done(None, ToolError(ErrorCode.CANCELLED,
+                                      "Téléchargement annulé par l'utilisateur dans QGIS."))
+        elif not success:
+            self.done(None, ToolError(ErrorCode.NETWORK_ERROR,
+                                      f"Service injoignable : {self.error or 'erreur inconnue'}",
+                                      {"url": self.step.url}))
+        else:
+            self.done(self.result, None)

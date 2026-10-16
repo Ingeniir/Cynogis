@@ -6,17 +6,15 @@ import logging
 from typing import Any
 
 from qgis.core import (
-    QgsBlockingNetworkRequest,
     QgsDataSourceUri,
     QgsProject,
     QgsRasterLayer,
     QgsVectorLayer,
 )
-from qgis.PyQt.QtCore import QUrl
-from qgis.PyQt.QtNetwork import QNetworkRequest
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import Fetch
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.webservices import (
@@ -35,7 +33,6 @@ from .common import get_layer
 from .outputs import Steps, add_to_group, run_to_project
 
 logger = logging.getLogger("cynogis.webservices")
-_NO_ERROR = getattr(QgsBlockingNetworkRequest, "ErrorCode", QgsBlockingNetworkRequest).NoError
 # GetCapabilities par service (plusieurs Mo pour la Géoplateforme) : vidé au rechargement.
 _CAPABILITIES: dict[str, list[dict[str, Any]]] = {}
 
@@ -61,20 +58,12 @@ def _service(service_id: str) -> tuple[WebService, list[str]]:
     return services[service_id], warnings
 
 
-def _fetch(url: str, authcfg: str | None) -> bytes:
-    """GET via le gestionnaire réseau de QGIS (proxy, certificats et authcfg de l'utilisateur)."""
-    request = QgsBlockingNetworkRequest()
-    if authcfg:
-        request.setAuthCfg(authcfg)
-    if request.get(QNetworkRequest(QUrl(url))) != _NO_ERROR:
-        raise ToolError(ErrorCode.NETWORK_ERROR,
-                        f"Service injoignable : {request.errorMessage()}", {"url": url})
-    return bytes(request.reply().content())
-
-
-def _layers(service: WebService, refresh: bool = False) -> list[dict[str, Any]]:
+def _layers(service: WebService, refresh: bool = False) -> Steps:
+    """Couches du service (list[dict]) : GetCapabilities téléchargé hors du thread principal
+    (tools/tasks.py, gestionnaire réseau de QGIS), gardé en cache pour la session."""
     if refresh or service.id not in _CAPABILITIES:
-        content = _fetch(capabilities_url(service), service.authcfg)
+        content = yield Fetch(capabilities_url(service), service.authcfg,
+                              f"GetCapabilities de {service.id}")
         try:
             _CAPABILITIES[service.id] = parse_capabilities(service.kind, content)
         except ValueError as exc:
@@ -83,13 +72,15 @@ def _layers(service: WebService, refresh: bool = False) -> list[dict[str, Any]]:
     return _CAPABILITIES[service.id]
 
 
-def _layer(service: WebService, name: str) -> dict[str, Any]:
+def _layer(service: WebService, name: str) -> Steps:
+    """Description (dict) d'une couche autorisée du service."""
     if not service.allows(name):
         raise ToolError(ErrorCode.PERMISSION_DENIED, f"Couche {name} non autorisée pour "
                         f"{service.id}.", {"layers": list(service.layers)})
-    layer = next((x for x in _layers(service) if x["name"] == name), None)
+    layers = yield from _layers(service)
+    layer = next((x for x in layers if x["name"] == name), None)
     if layer is None:
-        close = search_layers(_layers(service), service, name.split(":")[-1], 10)["layers"]
+        close = search_layers(layers, service, name.split(":")[-1], 10)["layers"]
         raise ToolError(ErrorCode.INVALID_PARAMS, f"Couche {name} absente de {service.id} : "
                         "cherche-la avec web_list_layers.", {"proches": [x["name"] for x in close]})
     return layer
@@ -102,11 +93,13 @@ def _crs(service: WebService, layer: dict[str, Any]) -> tuple[str | None, list[s
 
 
 def _wfs_layer(service: WebService, name: str, title: str, max_features: int | None
-               ) -> tuple[QgsVectorLayer, str | None, list[str]]:
+               ) -> Steps:
+    """(couche WFS en flux, SCR, avertissements)."""
     if service.kind != "wfs":
         raise ToolError(ErrorCode.INVALID_PARAMS, f"{service.id} est un WMS (image) : choisis un "
                         "service WFS pour des entités.")
-    crs, warnings = _crs(service, _layer(service, name))
+    info = yield from _layer(service, name)
+    crs, warnings = _crs(service, info)
     uri = QgsDataSourceUri()
     for key, value in wfs_params(service, name, crs, max_features or service.max_features).items():
         uri.setParam(key, value)
@@ -136,12 +129,13 @@ def web_list_services() -> ToolResult:
     "refresh": Param("boolean", "Relire le GetCapabilities au lieu du cache de session.",
                      required=False, default=False),
 })
-def web_list_layers(service_id: str, search: str | None, limit: int, refresh: bool) -> ToolResult:
+def web_list_layers(service_id: str, search: str | None, limit: int, refresh: bool) -> Steps:
     """Couches proposées par un service (GetCapabilities) : nom technique à passer aux autres
     outils, titre, résumé, SCR proposés (EPSG:2975 Réunion, EPSG:4471 Mayotte ?). Les gros
     services (Géoplateforme : des centaines de couches) se filtrent avec search."""
     service, warnings = _service(service_id)
-    result = search_layers(_layers(service, refresh), service, search, limit)
+    layers = yield from _layers(service, refresh)
+    result = search_layers(layers, service, search, limit)
     if result["truncated"]:
         warnings.append(f"{result['total']} couches trouvées, {limit} affichées : affine search.")
     return ToolResult({"service": service.id, "type": service.kind, **result}, warnings)
@@ -157,17 +151,18 @@ def web_list_layers(service_id: str, search: str | None, limit: int, refresh: bo
                           "service).", required=False, minimum=1, maximum=MAX_FEATURES_LIMIT),
 })
 def web_add_layer(service_id: str, layer_name: str, name: str | None,
-                  max_features: int | None) -> ToolResult:
+                  max_features: int | None) -> Steps:
     """Ajoute au projet (groupe « Cynogis ») une couche d'un service du catalogue, en flux :
     rien n'est téléchargé sur disque. WMS : image de fond, illisible par l'IA. WFS : entités
     lisibles avec get_features / get_field_values, chargées seulement sur l'emprise demandée
     et plafonnées à max_features ; pour une copie stable et complète d'une zone d'étude,
     utilise plutôt web_download_features."""
     service, warnings = _service(service_id)
-    info = _layer(service, layer_name)
+    info = yield from _layer(service, layer_name)
     title = name or info["title"] or layer_name
     if service.kind == "wfs":
-        layer, crs, crs_warnings = _wfs_layer(service, layer_name, title, max_features)
+        layer, crs, crs_warnings = yield from _wfs_layer(service, layer_name, title,
+                                                         max_features)
         warnings += crs_warnings
     else:
         crs, crs_warnings = _crs(service, info)
@@ -205,7 +200,7 @@ def web_download_features(service_id: str, layer_name: str, extent_layer_id: str
     l'audit). Entités entières, non découpées : clip ensuite avec overlay si besoin."""
     service, warnings = _service(service_id)
     limit = max_features or service.max_features
-    source, _, crs_warnings = _wfs_layer(service, layer_name, layer_name, limit)
+    source, _, crs_warnings = yield from _wfs_layer(service, layer_name, layer_name, limit)
     warnings += crs_warnings
     extent_layer = get_layer(extent_layer_id)
     rect = extent_layer.extent()

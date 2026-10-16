@@ -1,9 +1,10 @@
 """Traitements longs sans geler QGIS. Python pur : testable sans QGIS.
 
-Un outil qui lance des algorithmes Processing est un générateur : il cède une étape
-(AlgCall) au lieu d'appeler Processing. L'exécuteur (tools/tasks.py) lance l'étape dans une
-QgsTask et rappelle quand elle est finie, sur le thread principal ; le générateur reprend alors
-avec les résultats. Entre deux étapes, la boucle d'événements de QGIS est libre.
+Un outil qui lance des algorithmes Processing ou télécharge est un générateur : il cède une
+étape (AlgCall, Fetch) au lieu d'appeler Processing ou le réseau. L'exécuteur (tools/tasks.py)
+lance l'étape dans une QgsTask et rappelle quand elle est finie, sur le thread principal ; le
+générateur reprend alors avec les résultats. Entre deux étapes, la boucle d'événements de
+QGIS est libre.
 
 Une boucle Python longue cède des Pause (via Pacer) : la boucle d'événements traite ce qui
 attend (affichage, requêtes du pont) puis la boucle reprend. Un outil qui cède une Pause est
@@ -33,6 +34,17 @@ class AlgCall:
 
     algorithm_id: str
     params: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Fetch:
+    """Étape cédée par un outil : téléchargement HTTP GET (gestionnaire réseau de QGIS).
+    Résultat : le contenu (bytes), ou (champs, entités) si geojson."""
+
+    url: str
+    authcfg: str | None = None
+    label: str = "téléchargement"
+    geojson: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,14 +84,14 @@ def run_now(steps: Generator[Pause, Any, Any]) -> Any:
         return stop.value
 
 
-Step = AlgCall | Pause
+Step = AlgCall | Fetch | Pause
 # Type de retour des outils et helpers qui cèdent des étapes (appel avec « yield from »).
 Steps = Generator[Step, Any, Any]
 Done = Callable[[Any, "BaseException | None"], None]  # (résultats, erreur)
 
 
 class Executor(Protocol):
-    def start(self, step: AlgCall, done: Done) -> Any:
+    def start(self, step: AlgCall | Fetch, done: Done) -> Any:
         """Lance l'étape et renvoie un handle ; done est appelé une fois, sur le thread
         principal, après le retour de start."""
         ...
@@ -168,11 +180,12 @@ class JobManager:
             job.algorithm, job.progress, job.handle = step.label, step.progress, None
             self.executor.pause(lambda: self._advance(job, None, None))
             return
-        if not isinstance(step, AlgCall):
+        if not isinstance(step, (AlgCall, Fetch)):
             self._advance(job, None, TypeError(f"Étape inattendue : {step!r}"))
             return
         job.step += 1
-        job.algorithm, job.progress = step.algorithm_id, None
+        job.algorithm = step.algorithm_id if isinstance(step, AlgCall) else step.label
+        job.progress = None
         try:
             job.handle = self.executor.start(step, lambda v, e: self._advance(job, v, e))
         except Exception as exc:  # algorithme introuvable, paramètres refusés…
