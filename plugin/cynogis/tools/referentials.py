@@ -161,7 +161,7 @@ def list_reference_sources(layer_id: str | None) -> ToolResult:
     "feature_ids": Param("array", "Entités de la zone d'étude à utiliser. Absent : toutes.",
                          required=False, items="integer"),
     "overlay_sources": Param("array", "Sources prioritaires sur les surfaces agricoles, ex. "
-                             '["cirad_974_2020"] : la canne, les prairies… du CIRAD remplacent '
+                             '["cirad_974_2024"] : la canne, les prairies… du CIRAD remplacent '
                              "les cultures indifférenciées de l'OCS GE.", required=False,
                              items="string", items_enum=tuple(refs.BY_KEY)),
     "output_name": OUTPUT_NAME,
