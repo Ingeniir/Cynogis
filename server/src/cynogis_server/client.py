@@ -47,7 +47,8 @@ class QgisBridgeClient:
                               "QGIS n'est pas lancé ou le serveur Cynogis n'est pas démarré "
                               "(bouton Cynogis de la barre d'outils).") from exc
         except (OSError, json.JSONDecodeError) as exc:
-            raise BridgeError("QGIS_UNAVAILABLE", f"Fichier de connexion illisible : {exc}") from exc
+            raise BridgeError("QGIS_UNAVAILABLE",
+                              f"Fichier de connexion illisible : {exc}") from exc
 
     async def call(self, method: str, params: dict[str, Any] | None = None) -> BridgeResult:
         conn = self._read_connection()
@@ -66,7 +67,8 @@ class QgisBridgeClient:
             line = await asyncio.wait_for(reader.readline(), self.request_timeout)
         except asyncio.TimeoutError as exc:
             raise BridgeError("TIMEOUT",
-                              f"QGIS n'a pas répondu en {self.request_timeout:.0f} s ({method}).") from exc
+                              f"QGIS n'a pas répondu en {self.request_timeout:.0f} s "
+                              f"({method}).") from exc
         except ValueError as exc:
             raise BridgeError("PROTOCOL_ERROR", "Réponse trop volumineuse.") from exc
         finally:
@@ -81,4 +83,5 @@ class QgisBridgeClient:
             err = response.get("error") or {}
             raise BridgeError(err.get("code", "UNKNOWN"), err.get("message", "Erreur inconnue"),
                               err.get("details"))
-        return BridgeResult(response.get("data"), response.get("warnings") or [], response.get("audit_id"))
+        return BridgeResult(response.get("data"), response.get("warnings") or [],
+                            response.get("audit_id"))

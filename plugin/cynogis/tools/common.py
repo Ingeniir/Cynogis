@@ -193,7 +193,8 @@ def expression_context(layer: QgsVectorLayer) -> QgsExpressionContext:
 
 def prepare_expression(text: str, layer: QgsVectorLayer,
                        label: str = "expression") -> tuple[QgsExpression, QgsExpressionContext]:
-    """Analyse et prépare une expression QGIS. Détecte la syntaxe invalide et les champs inconnus."""
+    """Analyse et prépare une expression QGIS. Détecte la syntaxe invalide et les champs
+    inconnus."""
     expression = QgsExpression(text)
     if expression.hasParserError():
         raise ToolError(ErrorCode.INVALID_PARAMS,
@@ -208,7 +209,8 @@ def prepare_expression(text: str, layer: QgsVectorLayer,
 
 
 def feature_request(layer: QgsVectorLayer, filter_expression: str | None = None,
-                    attributes: list[str] | None = None, geometry: bool = True) -> QgsFeatureRequest:
+                    attributes: list[str] | None = None,
+                    geometry: bool = True) -> QgsFeatureRequest:
     """Requête optimisée. attributes=None : tous les champs ; [] : aucun champ."""
     request = QgsFeatureRequest()
     filter_needs_geometry = False
@@ -250,11 +252,13 @@ def iter_geometries(layer: QgsVectorLayer, request: QgsFeatureRequest,
 
 
 # --- Mesures ---------------------------------------------------------------
-def distance_area(crs: QgsCoordinateReferenceSystem, method: str = "ellipsoidal") -> QgsDistanceArea:
+def distance_area(crs: QgsCoordinateReferenceSystem,
+                  method: str = "ellipsoidal") -> QgsDistanceArea:
     """ellipsoidal : mesure sur l'ellipsoïde (GRS80 par défaut, celui du RGR92 et du RGM04).
     planar : mesure dans le SCR de la couche (qui doit être projeté)."""
     if not crs.isValid():
-        raise ToolError(ErrorCode.INVALID_PARAMS, "SCR de la couche non défini : mesure impossible.")
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        "SCR de la couche non défini : mesure impossible.")
     project = QgsProject.instance()
     da = QgsDistanceArea()
     da.setSourceCrs(crs, project.transformContext())
