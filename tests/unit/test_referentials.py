@@ -104,3 +104,19 @@ def test_cirad_974_2020_ombre_et_code_inconnu():
 def test_fichier_cirad_sous_son_nom_d_origine(tmp_path):
     (tmp_path / "OS_SPOT_2020_32740.gpkg").write_text("")
     assert find_source_file(BY_KEY["cirad_974_2020"], tmp_path).name == "OS_SPOT_2020_32740.gpkg"
+
+
+@pytest.mark.parametrize("cle,champ", [("cirad_974_2024", "niveau3"), ("cirad_974_2022", "code3")])
+def test_cirad_974_millesimes_meme_nomenclature(cle, champ):
+    assert map_feature(BY_KEY[cle], {champ: 1})["code"] == "2.1.1"
+    assert map_feature(BY_KEY[cle], {champ: 200})["code"] == "3.2.3"
+
+
+@pytest.mark.parametrize("code3,attendu", [(2, "4.2.1"), (9, "3.1.4"), (16, "2.1.3"),
+                                           (21, "2.2.3"), (26, "3.3.3"), (33, "1.2.2")])
+def test_cirad_976_2023_par_code(code3, attendu):
+    assert map_feature(BY_KEY["cirad_976_2023"], {"Code3": code3})["code"] == attendu
+
+
+def test_cirad_976_2023_couvre_les_33_classes():
+    assert sorted(BY_KEY["cirad_976_2023"].codes) == list(range(1, 34))

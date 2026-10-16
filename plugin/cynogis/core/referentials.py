@@ -1,7 +1,7 @@
 """Référentiels d'occupation du sol et passage vers la nomenclature des paysages.
 
 Sources : OCS GE de l'IGN (couverture CODE_CS et usage CODE_US) et cartes d'occupation du sol
-du CIRAD (code niveau3 de la carte de La Réunion 2020, libellé pour les autres). Chaque valeur
+du CIRAD (code de niveau 3, table propre à chaque territoire). Chaque valeur
 est rattachée à un code fermé de core/landscape.py, jamais inventé. Python pur.
 
 Lecture des règles OCS GE : une règle s'applique si son code de couverture est un préfixe du
@@ -27,7 +27,7 @@ TERRITORIES = {"REU": "reunion", "MYT": "mayotte"}
 DEFAULT_DIRECTORY = Path.home() / ".cynogis" / "referentials"
 EXTENSIONS = (".gpkg", ".shp", ".geojson")
 DOWNLOAD = {"ocsge": "https://geoservices.ign.fr/ocsge",
-            "cirad": "https://dataverse.cirad.fr"}
+            "cirad": "https://geode.cirad.fr/geoserver/ows (WFS)"}
 AGRICULTURAL_GROUP = "2"  # grand poste remplacé par une source prioritaire (overlay)
 
 
@@ -51,10 +51,11 @@ class Source:
         return DOWNLOAD[self.kind]
 
 
-# Carte d'occupation du sol de La Réunion 2020 du CIRAD (OS_SPOT_2020_32740.gpkg), champ niveau3.
-# Correspondance par code et non par libellé (libellés du fichier parfois abîmés, ex.
-# « Panneau photovolta?que »). Valeur : (code de nomenclature, note à vérifier ou "").
-CIRAD_974_2020_CODES: dict[int, tuple[str | None, str]] = {
+# Cartes d'occupation du sol de La Réunion du CIRAD (2020, 2022, 2024 : même nomenclature,
+# 29 classes de niveau 3). Correspondance par code et non par libellé (libellés du fichier
+# parfois abîmés, ex. « Panneau photovolta?que »). Valeur : (code de nomenclature, note à
+# vérifier ou "").
+CIRAD_974_CODES: dict[int, tuple[str | None, str]] = {
     1: ("2.1.1", ""),                    # Canne à sucre
     3: ("2.3.1", ""),                    # Prairies pâturées
     4: ("2.3.1", ""),                    # Prairies fauchées
@@ -87,14 +88,56 @@ CIRAD_974_2020_CODES: dict[int, tuple[str | None, str]] = {
     200: ("3.2.3", "Friche agricole."),
 }
 
+# Carte d'occupation du sol de Mayotte 2023 du CIRAD (couche TETIS:mayotte_2023_final_map),
+# champ Code3 (33 classes de niveau 3).
+CIRAD_976_2023_CODES: dict[int, tuple[str | None, str]] = {
+    1: ("4.2.2", "Zone intertidale ou tanne : sol nu (3.3.4) possible pour les tannes."),
+    2: ("4.2.1", ""),                    # Mangroves externes
+    3: ("4.2.1", ""),                    # Mangroves centrales et internes
+    4: ("4.2.1", "Forêt d'arrière-mangrove : forêt naturelle (3.1.4) possible."),
+    5: ("3.3.5", ""),                    # Plages
+    6: ("5.1.2", "Eaux : lagon (5.2.1) si le champ Lagon vaut 1, ravine (5.1.1) possible."),
+    7: ("3.3.1", "Falaises, rochers et sols nus non agricoles : sol nu (3.3.4) possible."),
+    8: ("3.2.3", "Fourrés, broussailles et zones herbacées : savane (3.2.1) possible."),
+    9: ("3.1.4", ""),                    # Forêts sèches
+    10: ("3.1.4", ""),                   # Forêts mésophiles
+    11: ("3.1.4", ""),                   # Forêts humides de moyenne altitude
+    12: ("3.1.4", ""),                   # Forêts et végétation submontagnarde
+    13: ("3.1.4", "Ripisylve ou forêt marécageuse : zone humide (4.1.1) possible."),
+    14: ("3.1.4", "Forêt enlianée effondrée : espèces envahissantes (3.2.4) possible."),
+    15: ("2.3.1", ""),                   # Pâturages
+    16: ("2.1.3", ""),                   # Manioc dominant
+    17: ("2.1.3", ""),                   # Ananas dominant
+    18: ("2.1.3", ""),                   # Songe dominant
+    19: ("2.1.3", "Cultures mélangées ou maraîchères : maraîchage (2.1.2) possible."),
+    20: ("2.1.3", ""),                   # Bananeraies
+    21: ("2.2.3", ""),                   # Ylang-ylang
+    22: ("2.1.3", "Agroforêt (jardin mahorais) : cocoteraie = plantation pérenne (2.2.3)."),
+    23: ("3.1.5", "Plantation d'Acacia mangium : espèce envahissante (3.2.4) possible."),
+    24: ("3.1.5", ""),                   # Autres plantations forestières
+    25: ("3.2.4", "Bambouseraie : forêt naturelle (3.1.4) possible."),
+    26: ("3.3.3", ""),                   # Padzas nus
+    27: ("3.3.3", "Padza végétalisé : végétation arbustive (3.2.3) ou savane (3.2.1) possible."),
+    28: ("1.1.1", "Bâti et chantiers : habitat diffus (1.1.2) selon la densité."),
+    29: ("1.2.1", "Centrale photovoltaïque rattachée aux zones d'activité."),
+    30: ("2.1.2", ""),                   # Serres
+    31: ("1.4.1", ""),                   # Végétation urbaine
+    32: ("1.3.1", ""),                   # Carrières et décharges
+    33: ("1.2.2", ""),                   # Routes et parkings
+}
+
 SOURCES = (
     Source("ocsge_974_2022", "REU", "ocsge", 2022, ("CODE_CS", "CODE_US"), "OCCUPATION_SOL"),
     Source("ocsge_974_2017", "REU", "ocsge", 2017, ("CODE_CS", "CODE_US"), "OCCUPATION_SOL"),
     Source("ocsge_976_2023", "MYT", "ocsge", 2023, ("CODE_CS", "CODE_US"), "OCCUPATION_SOL"),
     Source("ocsge_976_2020", "MYT", "ocsge", 2020, ("CODE_CS", "CODE_US"), "OCCUPATION_SOL"),
+    # 2024 : couche AIDA:os2024_reunion du WFS du CIRAD, sans fiche de catalogue publiée.
+    Source("cirad_974_2024", "REU", "cirad", 2024, ("niveau3",), codes=CIRAD_974_CODES),
+    Source("cirad_974_2022", "REU", "cirad", 2022, ("code3",),
+           file_stems=("OS_2022_Run_32740",), codes=CIRAD_974_CODES),
     Source("cirad_974_2020", "REU", "cirad", 2020, ("niveau3",),
-           file_stems=("OS_SPOT_2020_32740",), codes=CIRAD_974_2020_CODES),
-    Source("cirad_976_2023", "MYT", "cirad", 2023, ("classe",)),  # format non vérifié
+           file_stems=("OS_SPOT_2020_32740",), codes=CIRAD_974_CODES),
+    Source("cirad_976_2023", "MYT", "cirad", 2023, ("Code3",), codes=CIRAD_976_2023_CODES),
 )
 BY_KEY = {source.key: source for source in SOURCES}
 
