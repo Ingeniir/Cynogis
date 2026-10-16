@@ -37,7 +37,7 @@ from .common import (
     prepare_expression,
     to_json_value,
 )
-from .outputs import output_dir, run_in_memory
+from .outputs import Steps, output_dir, run_in_memory
 
 TABLE_FORMATS = {"csv": (".csv", None), "xlsx": (".xlsx", "XLSX"), "ods": (".ods", "ODS")}
 REPORT_FORMATS = {"pdf": ".pdf", "html": ".html", "markdown": ".md"}
@@ -115,7 +115,7 @@ def write_table(name: str, headers: list, rows: list, format: str,
 })
 def export_table(layer_id: str | None, table: dict | None, fields: list | None,
                  expression: str | None, format: str, output_name: str | None,
-                 separator: str) -> ToolResult:
+                 separator: str) -> Steps:
     """Exporte vers un tableur (mcp_outputs/) la table attributaire d'une couche ou un tableau
     de résultats déjà calculé (statistiques, coefficients, indices)."""
     suffix, driver = TABLE_FORMATS[format]
@@ -152,8 +152,8 @@ def export_table(layer_id: str | None, table: dict | None, fields: list | None,
         _write_csv(path, selected, rows, separator)
         row_count = len(rows)
     else:
-        source = (run_in_memory("native:extractbyexpression",
-                                {"INPUT": layer, "EXPRESSION": expression})
+        source = ((yield from run_in_memory("native:extractbyexpression",
+                                            {"INPUT": layer, "EXPRESSION": expression}))
                   if expression else layer)
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = driver

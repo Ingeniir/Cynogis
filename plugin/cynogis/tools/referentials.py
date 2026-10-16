@@ -42,7 +42,7 @@ from .common import (
 )
 from .geoprocessing import OUTPUT_NAME
 from .landscape import _territory
-from .outputs import run_in_memory, save_to_project
+from .outputs import Steps, run_in_memory, save_to_project
 
 OUTPUT_FIELDS = (("pays_code", "string", 10), ("pays_lib", "string", 80),
                  ("pays_grp", "string", 40), ("pays_surf", "real", 0))
@@ -167,7 +167,7 @@ def list_reference_sources(layer_id: str | None) -> ToolResult:
     "output_name": OUTPUT_NAME,
 })
 def clip_reference_landcover(layer_id: str, source: str, feature_ids: list | None,
-                             overlay_sources: list | None, output_name: str | None) -> ToolResult:
+                             overlay_sources: list | None, output_name: str | None) -> Steps:
     """Découpe un référentiel d'occupation du sol (OCS GE, CIRAD) sur la zone d'étude et le
     traduit dans la nomenclature paysagère Cynogis : couche de paysages (pays_code, pays_lib,
     pays_grp, pays_surf) dans mcp_outputs/. Rapide, sans entraînement. Ensuite :
@@ -229,8 +229,9 @@ def clip_reference_landcover(layer_id: str, source: str, feature_ids: list | Non
     raw = QgsMemoryProviderUtils.createMemoryLayer("referentiel", fields,
                                                    Qgis.WkbType.MultiPolygon, crs)
     add_to_memory(raw, kept)
-    dissolved = run_in_memory("native:dissolve", {"INPUT": raw, "FIELD": ["pays_code"]})
-    singles = run_in_memory("native:multiparttosingleparts", {"INPUT": dissolved})
+    dissolved = (yield from run_in_memory("native:dissolve",
+                                          {"INPUT": raw, "FIELD": ["pays_code"]}))
+    singles = (yield from run_in_memory("native:multiparttosingleparts", {"INPUT": dissolved}))
 
     out_fields = QgsFields()
     for name, type_name, length in OUTPUT_FIELDS:

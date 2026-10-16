@@ -32,7 +32,7 @@ from ..core.webservices import (
     wms_params,
 )
 from .common import get_layer
-from .outputs import add_to_group, run_to_project
+from .outputs import Steps, add_to_group, run_to_project
 
 logger = logging.getLogger("cynogis.webservices")
 _NO_ERROR = getattr(QgsBlockingNetworkRequest, "ErrorCode", QgsBlockingNetworkRequest).NoError
@@ -199,7 +199,7 @@ def web_add_layer(service_id: str, layer_name: str, name: str | None,
                           required=False, minimum=1, maximum=MAX_FEATURES_LIMIT),
 })
 def web_download_features(service_id: str, layer_name: str, extent_layer_id: str,
-                          output_name: str | None, max_features: int | None) -> ToolResult:
+                          output_name: str | None, max_features: int | None) -> Steps:
     """Télécharge les entités WFS intersectant l'emprise d'une couche dans un GeoPackage de
     mcp_outputs/ (copie figée, datée par le fichier, lisible hors ligne et traçable dans
     l'audit). Entités entières, non découpées : clip ensuite avec overlay si besoin."""
@@ -211,9 +211,9 @@ def web_download_features(service_id: str, layer_name: str, extent_layer_id: str
     rect = extent_layer.extent()
     extent = (f"{rect.xMinimum()},{rect.xMaximum()},{rect.yMinimum()},{rect.yMaximum()} "
               f"[{extent_layer.crs().authid()}]")
-    result = run_to_project("native:extractbyextent",
-                            {"INPUT": source, "EXTENT": extent, "CLIP": False},
-                            output_name or layer_name.split(":")[-1])
+    result = (yield from run_to_project("native:extractbyextent",
+                                        {"INPUT": source, "EXTENT": extent, "CLIP": False},
+                                        output_name or layer_name.split(":")[-1]))
     count = result.data["outputs"][0].get("feature_count", 0)
     if count >= limit:
         result.warnings.append(f"Plafond de {limit} entités atteint : résultat tronqué. Réduis "

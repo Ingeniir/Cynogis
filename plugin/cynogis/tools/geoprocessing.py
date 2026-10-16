@@ -26,7 +26,7 @@ from .common import (
     rect_to_list,
     require_field,
 )
-from .outputs import run_to_project, save_to_project
+from .outputs import Steps, run_to_project, save_to_project
 
 OUTPUT_NAME = Param("string", "Nom de la couche produite (défaut : opération_couche). Nettoyé, "
                     "jamais écrasé : un suffixe _2, _3… est ajouté si besoin.", required=False)
@@ -48,13 +48,13 @@ def _name(output_name: str | None, operation: str, layer_name: str) -> str:
     "layer_id": Param("string", "Couche vecteur (layer_id)."),
     "output_name": OUTPUT_NAME,
 })
-def fix_geometries(layer_id: str, output_name: str | None) -> ToolResult:
+def fix_geometries(layer_id: str, output_name: str | None) -> Steps:
     """Répare les géométries invalides (auto-intersections, anneaux mal fermés…) dans une
     nouvelle couche ; l'originale n'est pas modifiée. À lancer quand check_geometries signale
     des erreurs, avant toute superposition."""
     layer = get_vector_layer(layer_id)
-    return run_to_project("native:fixgeometries", {"INPUT": layer},
-                          _name(output_name, "corrige", layer.name()))
+    return (yield from run_to_project("native:fixgeometries", {"INPUT": layer},
+                                      _name(output_name, "corrige", layer.name())))
 
 
 @tool(level=Level.CREATE, params={
@@ -63,7 +63,7 @@ def fix_geometries(layer_id: str, output_name: str | None) -> ToolResult:
                         "Défaut : SCR de référence du territoire détecté.", required=False),
     "output_name": OUTPUT_NAME,
 })
-def reproject_layer(layer_id: str, target_crs: str | None, output_name: str | None) -> ToolResult:
+def reproject_layer(layer_id: str, target_crs: str | None, output_name: str | None) -> Steps:
     """Reprojette une couche vecteur dans un nouveau SCR (nouvelle couche)."""
     layer = get_vector_layer(layer_id)
     if target_crs is None:
@@ -75,8 +75,9 @@ def reproject_layer(layer_id: str, target_crs: str | None, output_name: str | No
     crs = QgsCoordinateReferenceSystem(target_crs)
     if not crs.isValid():
         raise ToolError(ErrorCode.INVALID_PARAMS, f"SCR invalide : {target_crs}")
-    return run_to_project("native:reprojectlayer", {"INPUT": layer, "TARGET_CRS": crs},
-                          _name(output_name, crs.authid().replace(":", "_"), layer.name()))
+    name = _name(output_name, crs.authid().replace(":", "_"), layer.name())
+    return (yield from run_to_project("native:reprojectlayer",
+                                      {"INPUT": layer, "TARGET_CRS": crs}, name))
 
 
 @tool(level=Level.CREATE, params={
@@ -90,7 +91,7 @@ def reproject_layer(layer_id: str, target_crs: str | None, output_name: str | No
     "output_name": OUTPUT_NAME,
 })
 def buffer(layer_id: str, distance: float, segments: int, dissolve: bool,
-           output_name: str | None) -> ToolResult:
+           output_name: str | None) -> Steps:
     """Zone tampon autour des entités (nouvelle couche). Ex. : bande de 10 m autour des
     ravines. La distance est en mètres : la couche doit être dans un SCR projeté."""
     layer = get_vector_layer(layer_id)
@@ -98,10 +99,10 @@ def buffer(layer_id: str, distance: float, segments: int, dissolve: bool,
         raise ToolError(ErrorCode.CRS_GEOGRAPHIC,
                         f"{layer.name()} est en SCR géographique ({layer.crs().authid()}) : "
                         "reprojette-la d'abord avec reproject_layer.")
-    return run_to_project("native:buffer",
-                          {"INPUT": layer, "DISTANCE": distance, "SEGMENTS": segments,
-                           "DISSOLVE": dissolve},
-                          _name(output_name, f"tampon_{distance:g}m", layer.name()))
+    return (yield from run_to_project("native:buffer",
+                                      {"INPUT": layer, "DISTANCE": distance, "SEGMENTS": segments,
+                                       "DISSOLVE": dissolve},
+                                      _name(output_name, f"tampon_{distance:g}m", layer.name())))
 
 
 @tool(level=Level.CREATE, params={
@@ -177,13 +178,13 @@ def create_study_area_buffers(layer_id: str, immediate_m: float, close_m: float,
                     required=False, items="string"),
     "output_name": OUTPUT_NAME,
 })
-def dissolve(layer_id: str, fields: list[str] | None, output_name: str | None) -> ToolResult:
+def dissolve(layer_id: str, fields: list[str] | None, output_name: str | None) -> Steps:
     """Fusionne les entités (nouvelle couche), globalement ou par valeur de champs.
     Ex. : une entité par type de paysage."""
     layer = get_vector_layer(layer_id)
     names = [require_field(layer, f) for f in fields or []]
-    return run_to_project("native:dissolve", {"INPUT": layer, "FIELD": names},
-                          _name(output_name, "fusion", layer.name()))
+    return (yield from run_to_project("native:dissolve", {"INPUT": layer, "FIELD": names},
+                                      _name(output_name, "fusion", layer.name())))
 
 
 @tool(level=Level.CREATE, params={
@@ -198,7 +199,7 @@ def dissolve(layer_id: str, fields: list[str] | None, output_name: str | None) -
     "output_name": OUTPUT_NAME,
 })
 def extract(layer_id: str, expression: str | None, location_layer_id: str | None,
-            predicates: list[str], output_name: str | None) -> ToolResult:
+            predicates: list[str], output_name: str | None) -> Steps:
     """Copie dans une nouvelle couche les entités qui vérifient une expression OU une relation
     spatiale avec une autre couche (un seul des deux modes)."""
     layer = get_vector_layer(layer_id)
@@ -207,14 +208,15 @@ def extract(layer_id: str, expression: str | None, location_layer_id: str | None
                         "Fournis soit expression, soit location_layer_id (un seul).")
     name = _name(output_name, "extrait", layer.name())
     if expression is not None:
-        return run_to_project("native:extractbyexpression",
-                              {"INPUT": layer, "EXPRESSION": expression}, name)
+        return (yield from run_to_project("native:extractbyexpression",
+                                          {"INPUT": layer, "EXPRESSION": expression}, name))
     if not predicates:
         raise ToolError(ErrorCode.INVALID_PARAMS, "predicates ne peut pas être vide.")
-    return run_to_project("native:extractbylocation",
-                          {"INPUT": layer, "INTERSECT": get_vector_layer(location_layer_id),
-                           "PREDICATE": [LOCATION_PREDICATES.index(p) for p in predicates]},
-                          name)
+    return (yield from run_to_project(
+        "native:extractbylocation",
+        {"INPUT": layer, "INTERSECT": get_vector_layer(location_layer_id),
+         "PREDICATE": [LOCATION_PREDICATES.index(p) for p in predicates]},
+        name))
 
 
 # Indices de native:joinattributesbylocation et native:joinbylocationsummary (pas de disjoint).
@@ -249,7 +251,7 @@ JOIN_SUMMARIES = ("count", "unique", "min", "max", "range", "sum", "mean", "medi
 def spatial_join(layer_id: str, join_layer_id: str, predicates: list[str],
                  fields: list[str] | None, method: str, summaries: list[str] | None,
                  discard_nonmatching: bool, prefix: str | None,
-                 output_name: str | None) -> ToolResult:
+                 output_name: str | None) -> Steps:
     """Jointure spatiale (nouvelle couche) : chaque entité reçoit les attributs des entités
     d'une autre couche qui la touchent, la contiennent… (reprojection automatique). Ex. :
     commune et zonage PLU de chaque parcelle, habitat de chaque observation. Avec summaries :
@@ -265,9 +267,9 @@ def spatial_join(layer_id: str, join_layer_id: str, predicates: list[str],
     name = _name(output_name, "jointure", layer.name())
     if summaries:
         params["SUMMARIES"] = [JOIN_SUMMARIES.index(s) for s in dict.fromkeys(summaries)]
-        return run_to_project("native:joinbylocationsummary", params, name)
+        return (yield from run_to_project("native:joinbylocationsummary", params, name))
     params.update(METHOD=JOIN_METHODS.index(method), PREFIX=prefix or "")
-    result = run_to_project("native:joinattributesbylocation", params, name)
+    result = (yield from run_to_project("native:joinattributesbylocation", params, name))
     unjoinable = result.data["results"].get("UNJOINABLE_COUNT")
     if unjoinable:
         result.warnings.append(f"{unjoinable} entité(s) sans correspondance"
@@ -288,11 +290,11 @@ def spatial_join(layer_id: str, join_layer_id: str, predicates: list[str],
     "output_name": OUTPUT_NAME,
 })
 def overlay(layer_id: str, overlay_layer_id: str, operation: str,
-            output_name: str | None) -> ToolResult:
+            output_name: str | None) -> Steps:
     """Superposition de deux couches vecteur (nouvelle couche) : intersection, union,
     différence ou découpage. Lance check_geometries avant : les géométries invalides font
     échouer l'opération (fix_geometries pour les réparer)."""
     layer = get_vector_layer(layer_id)
     other = get_vector_layer(overlay_layer_id)
-    return run_to_project(OVERLAYS[operation], {"INPUT": layer, "OVERLAY": other},
-                          _name(output_name, operation, layer.name()))
+    return (yield from run_to_project(OVERLAYS[operation], {"INPUT": layer, "OVERLAY": other},
+                                      _name(output_name, operation, layer.name())))

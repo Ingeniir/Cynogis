@@ -26,6 +26,7 @@ class Response:
     warnings: list[str] = field(default_factory=list)
     error: dict[str, Any] | None = None
     audit_id: str | None = None
+    job_id: str | None = None  # traitement en cours : suivre avec get_job_status
 
     @classmethod
     def failure(cls, request_id: str | None, err: ToolError) -> Response:
@@ -39,6 +40,8 @@ class Response:
             payload["warnings"] = self.warnings
         else:
             payload["error"] = self.error
+        if self.job_id is not None:
+            payload["job_id"] = self.job_id
         return json.dumps(payload, ensure_ascii=False, default=str).encode(ENCODING) + b"\n"
 
 

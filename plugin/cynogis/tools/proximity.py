@@ -49,7 +49,7 @@ from .common import (
 from .export import TABLE_FORMATS, write_table
 from .features import FILTER_HELP
 from .geoprocessing import OUTPUT_NAME
-from .outputs import run_in_memory, save_to_project
+from .outputs import Steps, run_in_memory, save_to_project
 
 HULL_METHODS = ("ordered", "convex_hull", "concave_hull", "buffer")
 MATRIX_FORMATS = ("matrix", "pairs")
@@ -898,7 +898,7 @@ def distance_to_sensitive_features(footprint_layer_id: str, sensitive: list,
     "output_name": OUTPUT_NAME,
 })
 def distance_layer(layer_id: str, target_layer_id: str, mode: str, k: int,
-                   max_distance_m: float | None, output_name: str | None) -> ToolResult:
+                   max_distance_m: float | None, output_name: str | None) -> Steps:
     """Couche de lignes reliant chaque entité à ses k plus proches entités cibles (nouvelle
     couche à cartographier) : attributs des deux entités et distance en mètres sur
     l'ellipsoïde (champ distance). Pour un simple tableau : nearest_features."""
@@ -913,7 +913,7 @@ def distance_layer(layer_id: str, target_layer_id: str, mode: str, k: int,
                             f"({source.crs().authid()}) : reprojette {source.name()} "
                             "(EPSG:2975 / EPSG:4471) ou retire max_distance_m.")
         params["DISTANCE"] = float(max_distance_m)
-    lines = run_in_memory("native:shortestline", params)
+    lines = (yield from run_in_memory("native:shortestline", params))
     # La distance de l'algorithme est planaire, dans le SCR source : remplacée par l'ellipsoïdale.
     da = distance_area(lines.crs())
     index = lines.fields().indexOf("distance")
