@@ -29,6 +29,7 @@ class BridgeResult:
     data: Any
     warnings: list[str] = field(default_factory=list)
     audit_id : str | None = None
+    job_id: str | None = None  # traitement en cours dans QGIS : suivre avec get_job_status
 
 
 class QgisBridgeClient:
@@ -84,4 +85,4 @@ class QgisBridgeClient:
             raise BridgeError(err.get("code", "UNKNOWN"), err.get("message", "Erreur inconnue"),
                               err.get("details"))
         return BridgeResult(response.get("data"), response.get("warnings") or [],
-                            response.get("audit_id"))
+                            response.get("audit_id"), response.get("job_id"))

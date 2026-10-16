@@ -23,6 +23,7 @@ from ..core import landscape as nomenclature
 from ..core import referentials as refs
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import Pacer
 from ..core.metrics import M2_PER_HA
 from ..core.registry import Level, tool
 from ..core.schema import Param
@@ -42,7 +43,7 @@ from .common import (
 )
 from .geoprocessing import OUTPUT_NAME
 from .landscape import _territory
-from .outputs import run_in_memory, save_to_project
+from .outputs import Steps, run_in_memory, save_to_project
 
 OUTPUT_FIELDS = (("pays_code", "string", 10), ("pays_lib", "string", 80),
                  ("pays_grp", "string", 40), ("pays_surf", "real", 0))
@@ -68,8 +69,9 @@ def _open(source: refs.Source) -> QgsVectorLayer:
 
 
 def _clipped(source: refs.Source, aoi: QgsGeometry,
-             crs: QgsCoordinateReferenceSystem) -> list[Piece]:
-    """Entités du référentiel découpées par la zone d'étude (SCR crs) et traduites."""
+             crs: QgsCoordinateReferenceSystem) -> Steps:
+    """Entités du référentiel découpées par la zone d'étude (SCR crs) et traduites
+    (list[Piece])."""
     layer = _open(source)
     fields = [require_field(layer, name) for name in source.code_fields]
     rect = aoi.boundingBox()
@@ -81,7 +83,9 @@ def _clipped(source: refs.Source, aoi: QgsGeometry,
     engine = QgsGeometry.createGeometryEngine(aoi.constGet())
     engine.prepareGeometry()
     pieces: list[Piece] = []
+    pace = Pacer(f"découpage de {source.key}")
     for feature, geometry in iter_geometries(layer, request, crs):
+        yield from pace()
         if not engine.intersects(geometry.constGet()):
             continue
         piece = polygon_parts(geometry if engine.contains(geometry.constGet())
@@ -95,9 +99,10 @@ def _clipped(source: refs.Source, aoi: QgsGeometry,
     return pieces
 
 
-def _overlay(pieces: list[Piece], priority: list[Piece]) -> tuple[list[Piece], int]:
+def _overlay(pieces: list[Piece], priority: list[Piece]) -> Steps:
     """Les parties agricoles de pieces sont remplacées par les classes agricoles de priority
-    là où elles existent (ex. canne du CIRAD sur « culture » de l'OCS GE)."""
+    là où elles existent (ex. canne du CIRAD sur « culture » de l'OCS GE). Renvoie
+    (list[Piece], nombre de remplacements)."""
     agricultural = [(g, m, label) for g, m, label in priority
                     if refs.is_agricultural(m["code"])]
     index = QgsSpatialIndex()
@@ -105,7 +110,9 @@ def _overlay(pieces: list[Piece], priority: list[Piece]) -> tuple[list[Piece], i
         index.addFeature(position, geometry.boundingBox())
     result: list[Piece] = []
     replaced = 0
-    for geometry, mapped, label in pieces:
+    pace = Pacer("superposition des sources", len(pieces))
+    for done, (geometry, mapped, label) in enumerate(pieces):
+        yield from pace(done)
         hits = [agricultural[i] for i in index.intersects(geometry.boundingBox())
                 if agricultural[i][0].intersects(geometry)] \
             if refs.is_agricultural(mapped["code"]) else []
@@ -167,7 +174,7 @@ def list_reference_sources(layer_id: str | None) -> ToolResult:
     "output_name": OUTPUT_NAME,
 })
 def clip_reference_landcover(layer_id: str, source: str, feature_ids: list | None,
-                             overlay_sources: list | None, output_name: str | None) -> ToolResult:
+                             overlay_sources: list | None, output_name: str | None) -> Steps:
     """Découpe un référentiel d'occupation du sol (OCS GE, CIRAD) sur la zone d'étude et le
     traduit dans la nomenclature paysagère Cynogis : couche de paysages (pays_code, pays_lib,
     pays_grp, pays_surf) dans mcp_outputs/. Rapide, sans entraînement. Ensuite :
@@ -194,14 +201,15 @@ def clip_reference_landcover(layer_id: str, source: str, feature_ids: list | Non
         aoi = aoi.makeValid()
     crs = area_layer.crs()
 
-    pieces = _clipped(primary, aoi, crs)
+    pieces = yield from _clipped(primary, aoi, crs)
     replaced = 0
     for key in dict.fromkeys(overlay_sources or []):
         overlay = refs.BY_KEY[key]
         if overlay.territory != primary.territory or key == source:
             raise ToolError(ErrorCode.INVALID_PARAMS, f"{key} ne peut pas compléter {source} "
                             "(autre territoire ou même source).")
-        pieces, count = _overlay(pieces, _clipped(overlay, aoi, crs))
+        priority = yield from _clipped(overlay, aoi, crs)
+        pieces, count = yield from _overlay(pieces, priority)
         replaced += count
 
     da = distance_area(crs)
@@ -229,8 +237,9 @@ def clip_reference_landcover(layer_id: str, source: str, feature_ids: list | Non
     raw = QgsMemoryProviderUtils.createMemoryLayer("referentiel", fields,
                                                    Qgis.WkbType.MultiPolygon, crs)
     add_to_memory(raw, kept)
-    dissolved = run_in_memory("native:dissolve", {"INPUT": raw, "FIELD": ["pays_code"]})
-    singles = run_in_memory("native:multiparttosingleparts", {"INPUT": dissolved})
+    dissolved = (yield from run_in_memory("native:dissolve",
+                                          {"INPUT": raw, "FIELD": ["pays_code"]}))
+    singles = (yield from run_in_memory("native:multiparttosingleparts", {"INPUT": dissolved}))
 
     out_fields = QgsFields()
     for name, type_name, length in OUTPUT_FIELDS:

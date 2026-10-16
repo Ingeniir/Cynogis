@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from qgis.core import Qgis
+from qgis.core import Qgis, QgsProject
 from qgis.PyQt.QtGui import QIcon
 
 from .bridge.connection import new_token, remove_connection_file, write_connection_file
@@ -44,6 +44,7 @@ from .tools import (
     webservices,
     zoning,
 )
+from .tools.tasks import ProcessingExecutor
 from .ui.confirm import make_confirmer
 
 PLUGIN_DIR = Path(__file__).resolve().parent
@@ -72,6 +73,7 @@ class CynogisPlugin:
             policy=PermissionPolicy(max_level=Level.DESTROY,
                                     confirm=make_confirmer(iface.mainWindow())),
             audit=AuditLog(DATA_DIR / "audit"),
+            executor=ProcessingExecutor(),
         )
         logger.info("Outils chargés : %s", ", ".join(registry.names))
 
@@ -86,8 +88,15 @@ class CynogisPlugin:
         self.iface.addPluginToMenu(MENU, self._action)
 
         self._load_palettes()
+        project = QgsProject.instance()
+        project.aboutToBeCleared.connect(self._cancel_jobs)
+        project.layersWillBeRemoved.connect(self._cancel_jobs)
 
     def unload(self) -> None:
+        project = QgsProject.instance()
+        project.aboutToBeCleared.disconnect(self._cancel_jobs)
+        project.layersWillBeRemoved.disconnect(self._cancel_jobs)
+        self._cancel_jobs()
         self._stop_bridge()
         if self._action is not None:
             self.iface.removeToolBarIcon(self._action)
@@ -130,6 +139,13 @@ class CynogisPlugin:
             remove_connection_file(self._token)
             self._token = None
         self._notify("Serveur arrêté", Qgis.MessageLevel.Info)
+
+    def _cancel_jobs(self, *_args) -> None:
+        """Projet fermé, couche supprimée ou plugin déchargé : un traitement en cours
+        pourrait reprendre sur une couche détruite (plantage) ; il est annulé."""
+        if self._dispatcher.jobs is not None:
+            self._dispatcher.jobs.cancel_all("Projet fermé, couche supprimée ou plugin "
+                                             "déchargé pendant le traitement : annulé.")
 
     def _set_checked(self, value: bool) -> None:
         if self._action is not None:

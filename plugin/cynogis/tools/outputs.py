@@ -5,14 +5,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from qgis import processing
 from qgis.core import (
     Qgis,
     QgsApplication,
     QgsMapLayer,
-    QgsProcessingContext,
-    QgsProcessingException,
-    QgsProcessingFeedback,
     QgsProject,
     QgsRasterLayer,
     QgsVectorFileWriter,
@@ -21,6 +17,7 @@ from qgis.core import (
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import AlgCall, Steps
 from ..core.naming import clean_name, unique_path
 from .common import to_json_value
 
@@ -66,28 +63,29 @@ def is_optional(param: Any) -> bool:
     return bool(param.flags() & Qgis.ProcessingParameterFlag.Optional)
 
 
-def _run(algorithm_id: str, params: dict[str, Any]) -> dict[str, Any]:
-    context = QgsProcessingContext()
-    context.setProject(QgsProject.instance())
-    feedback = QgsProcessingFeedback()
-    try:
-        return processing.run(algorithm_id, params, context=context, feedback=feedback)
-    except QgsProcessingException as exc:
-        raise ToolError(ErrorCode.PROCESSING_FAILED, f"{algorithm_id} : {exc}",
-                        {"log": feedback.textLog()[-2000:]}) from exc
+# Les fonctions qui lancent Processing sont des générateurs : l'appelant écrit
+# « x = (yield from run_to_project(...)) » et devient lui-même un générateur. L'outil est alors
+# exécuté comme un job (core/jobs.py) : l'algorithme tourne hors du thread principal et QGIS
+# ne gèle pas. Ne jamais appeler ces fonctions sans « yield from ».
 
 
-def run_in_memory(algorithm_id: str, params: dict[str, Any]) -> QgsVectorLayer:
-    """Étape intermédiaire : sortie OUTPUT en couche mémoire, rien d'écrit ni d'ajouté au
-    projet. Le résultat final passe ensuite par run_to_project."""
-    return _run(algorithm_id, {**params, "OUTPUT": "memory:"})["OUTPUT"]
+def _run(algorithm_id: str, params: dict[str, Any]) -> Steps:
+    """Résultats de l'algorithme (couches memory: comprises), via l'exécuteur des jobs."""
+    return (yield AlgCall(algorithm_id, params))
+
+
+def run_in_memory(algorithm_id: str, params: dict[str, Any]) -> Steps:
+    """Étape intermédiaire : sortie OUTPUT en couche mémoire (QgsVectorLayer), rien d'écrit
+    ni d'ajouté au projet. Le résultat final passe ensuite par run_to_project."""
+    results = yield from _run(algorithm_id, {**params, "OUTPUT": "memory:"})
+    return results["OUTPUT"]
 
 
 def run_to_project(algorithm_id: str, params: dict[str, Any], output_name: str,
-                   extra_outputs: tuple[str, ...] = ()) -> ToolResult:
-    """Exécute un algorithme Processing ; chaque sortie obligatoire (et chaque sortie
-    facultative nommée dans extra_outputs) va dans un fichier neuf de mcp_outputs/ puis est
-    ajoutée au projet. Les paramètres de sortie sont imposés ici."""
+                   extra_outputs: tuple[str, ...] = ()) -> Steps:
+    """Exécute un algorithme Processing (renvoie un ToolResult) ; chaque sortie obligatoire
+    (et chaque sortie facultative nommée dans extra_outputs) va dans un fichier neuf de
+    mcp_outputs/ puis est ajoutée au projet. Les paramètres de sortie sont imposés ici."""
     alg = QgsApplication.processingRegistry().algorithmById(algorithm_id)
     if alg is None:
         raise ToolError(ErrorCode.ALGORITHM_NOT_ALLOWED,
@@ -105,7 +103,8 @@ def run_to_project(algorithm_id: str, params: dict[str, Any], output_name: str,
         name = base if len(destinations) == 1 else f"{base}_{clean_name(param.name())}"
         targets[param.name()] = (unique_path(directory, name, suffix), suffix == ".tif")
 
-    results = _run(algorithm_id, {**params, **{k: str(p) for k, (p, _) in targets.items()}})
+    results = yield from _run(algorithm_id,
+                              {**params, **{k: str(p) for k, (p, _) in targets.items()}})
 
     outputs = [_output_item(key, path, raster, warnings)
                for key, (path, raster) in targets.items()]

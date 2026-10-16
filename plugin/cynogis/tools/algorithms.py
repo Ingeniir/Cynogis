@@ -6,12 +6,11 @@ from typing import Any
 from qgis.core import QgsApplication, QgsProcessingAlgorithm
 
 from ..core import algorithms as catalog
-from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import to_json_value
-from .outputs import is_optional, run_to_project
+from .outputs import Steps, is_optional, run_to_project
 
 MAX_HELP_CHARS = 1500
 
@@ -74,7 +73,7 @@ def describe_algorithm(algorithm_id: str) -> dict:
     "output_name": Param("string", "Nom de la couche produite (nettoyé, jamais écrasé).",
                          required=False),
 })
-def run_algorithm(algorithm_id: str, parameters: dict, output_name: str | None) -> ToolResult:
+def run_algorithm(algorithm_id: str, parameters: dict, output_name: str | None) -> Steps:
     """Lance un algorithme Processing de la liste blanche. Le résultat est écrit dans un
     nouveau GeoPackage de mcp_outputs/ (jamais d'écrasement) et ajouté au projet dans le
     groupe « Cynogis ». Préfère les outils dédiés (buffer, overlay…) quand ils existent."""
@@ -90,4 +89,4 @@ def run_algorithm(algorithm_id: str, parameters: dict, output_name: str | None) 
                         f"Sorties gérées par Cynogis, à retirer : {', '.join(destinations)}. "
                         "Utilise output_name pour nommer le résultat.")
     name = output_name or algorithm_id.split(":")[-1]
-    return run_to_project(algorithm_id, parameters, name)
+    return (yield from run_to_project(algorithm_id, parameters, name))

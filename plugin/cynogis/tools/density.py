@@ -34,7 +34,7 @@ from .common import (
 )
 from .features import FILTER_HELP
 from .geoprocessing import OUTPUT_NAME
-from .outputs import run_in_memory, run_to_project, save_to_project
+from .outputs import Steps, run_in_memory, run_to_project, save_to_project
 
 KERNELS = ("quartic", "triangular", "uniform", "triweight", "epanechnikov")  # ordre QGIS
 MAX_CELLS = 25_000_000
@@ -168,7 +168,7 @@ def _style(layer, thresholds: list[tuple[float, float, float]], maximum: float) 
 })
 def kernel_density_points(layer_id: str, radius_m: float, pixel_size_m: float | None,
                           weight_field: str | None, kernel: str, filter_expression: str | None,
-                          isopleth_polygons: bool, output_name: str | None) -> ToolResult:
+                          isopleth_polygons: bool, output_name: str | None) -> Steps:
     """Carte de densité (noyau) d'observations : raster .tif dans mcp_outputs/, stylé par
     isoplèthes (part de la densité totale : 95 %, 75 %, 50 % = noyau de concentration),
     avec la surface et le seuil de chaque isoplèthe ; avec isopleth_polygons, couche de
@@ -186,8 +186,8 @@ def kernel_density_points(layer_id: str, radius_m: float, pixel_size_m: float | 
     source = layer
     if filter_expression:
         prepare_expression(filter_expression, layer, "filter_expression")
-        source = run_in_memory("native:extractbyexpression",
-                               {"INPUT": layer, "EXPRESSION": filter_expression})
+        source = (yield from run_in_memory("native:extractbyexpression",
+                                           {"INPUT": layer, "EXPRESSION": filter_expression}))
     count = source.featureCount()
     if count < 2:
         raise ToolError(ErrorCode.INVALID_PARAMS, f"{count} point(s) retenu(s) : au moins 2 "
@@ -199,10 +199,10 @@ def kernel_density_points(layer_id: str, radius_m: float, pixel_size_m: float | 
         raise ToolError(ErrorCode.INVALID_PARAMS, f"Raster de {cells:,.0f} pixels : augmente "
                         "pixel_size_m ou filtre les points.".replace(",", " "))
 
-    result = run_to_project("native:heatmapkerneldensityestimation", {
+    result = (yield from run_to_project("native:heatmapkerneldensityestimation", {
         "INPUT": source, "RADIUS": float(radius_m), "PIXEL_SIZE": pixel,
         "WEIGHT_FIELD": weight_field, "KERNEL": KERNELS.index(kernel), "OUTPUT_VALUE": 0,
-    }, output_name or f"densite_{layer.name()}")
+    }, output_name or f"densite_{layer.name()}"))
     base = Path(result.data["outputs"][0]["path"]).stem
     output = result.data["outputs"][0]
     thresholds, maximum = _isopleths(output["path"])

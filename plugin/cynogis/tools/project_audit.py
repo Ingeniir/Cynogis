@@ -19,6 +19,7 @@ from qgis.PyQt.QtGui import QColor
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import run_now
 from ..core.project_audit import audit, build_sections, severity_counts, verdict
 from ..core.registry import Level, tool
 from ..core.report import build_html, build_markdown
@@ -56,8 +57,8 @@ def _vector_facts(layer: QgsVectorLayer, max_features: int) -> dict[str, Any]:
     }
     if geometry not in ("none", "unknown"):
         if count is not None and count <= max_features:
-            facts["geometry_check"] = geometry_report(
-                layer, feature_request(layer, None, [], True), 0)
+            facts["geometry_check"] = run_now(geometry_report(
+                layer, feature_request(layer, None, [], True), 0))
         else:
             facts["geometry_skipped"] = True
     path = source_path(layer)

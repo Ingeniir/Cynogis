@@ -14,7 +14,6 @@ from qgis.core import (
     QgsFeatureRequest,
     QgsFields,
     QgsGeometry,
-    QgsJsonUtils,
     QgsMemoryProviderUtils,
     QgsProject,
     QgsRectangle,
@@ -24,6 +23,7 @@ from qgis.core import (
 from ..core import zoning
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import Fetch, Pacer, Steps
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.territory import TERRITORIES, detect_territory
@@ -46,7 +46,7 @@ from .common import (
 )
 from .export import TABLE_FORMATS, write_table
 from .outputs import save_to_project
-from .webservices import _fetch, _service
+from .webservices import _service
 
 SERVICE = "geopf_wfs"
 WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -55,16 +55,16 @@ HEADERS = ["Zonage", "Zone", "Statut", "Surface intersectée (ha)", "Part du pro
 
 
 def _wfs_features(typename: str, expression: str | None, search: QgsRectangle, crs,
-                  max_features: int) -> list[QgsFeature]:
-    """Entités WFS (EPSG:4326) dans l'emprise de recherche, filtrées par l'expression."""
+                  max_features: int) -> Steps:
+    """Entités WFS (list[QgsFeature], EPSG:4326) dans l'emprise de recherche, filtrées par
+    l'expression. Téléchargement et décodage hors du thread principal (tools/tasks.py)."""
     service, _ = _service(SERVICE)
     box = QgsCoordinateTransform(crs, WGS84, QgsProject.instance()).transformBoundingBox(search)
     url = zoning.getfeature_url(service.url, typename, (box.xMinimum(), box.yMinimum(),
                                                         box.xMaximum(), box.yMaximum()),
                                 min(max_features, service.max_features))
-    text = _fetch(url, service.authcfg).decode("utf-8")
-    fields = QgsJsonUtils.stringToFields(text)
-    features = QgsJsonUtils.stringToFeatureList(text, fields)
+    fields, features = yield Fetch(url, service.authcfg, f"téléchargement de {typename}",
+                                   geojson=True)
     if not expression:
         return features
     compiled = QgsExpression(expression)
@@ -73,7 +73,9 @@ def _wfs_features(typename: str, expression: str | None, search: QgsRectangle, c
     scope.setFields(fields)
     context.appendScope(scope)
     kept = []
-    for feature in features:
+    pace = Pacer(f"filtrage de {typename}", len(features))
+    for done, feature in enumerate(features):
+        yield from pace(done)
         context.setFeature(feature)
         if compiled.evaluate(context):
             kept.append(feature)
@@ -81,7 +83,7 @@ def _wfs_features(typename: str, expression: str | None, search: QgsRectangle, c
 
 
 def _sources(item: zoning.Zoning, local: dict[str, list[dict]], search: QgsRectangle, crs,
-             max_features: int):
+             max_features: int) -> Steps:
     """[(entités, SCR, champ du nom, champ de la fiche)] à examiner pour un zonage ; les
     couches locales priment sur le flux national."""
     if item.key in local:
@@ -100,8 +102,8 @@ def _sources(item: zoning.Zoning, local: dict[str, list[dict]], search: QgsRecta
         return result
     if item.typename is None:
         return []
-    return [(_wfs_features(item.typename, item.filter, search, crs, max_features), WGS84,
-             item.name_field, item.url_field)]
+    features = yield from _wfs_features(item.typename, item.filter, search, crs, max_features)
+    return [(features, WGS84, item.name_field, item.url_field)]
 
 
 @tool(level=Level.CREATE, params={
@@ -130,7 +132,7 @@ def _sources(item: zoning.Zoning, local: dict[str, list[dict]], search: QgsRecta
 def regulatory_zoning_intersect(layer_id: str, zonings: list | None,
                                 local_layers: list | None, search_distance_m: float,
                                 create_layer: bool, export_format: str, max_features: int,
-                                output_name: str | None) -> ToolResult:
+                                output_name: str | None) -> Steps:
     """Croise le projet avec les zonages réglementaires et d'inventaire (Parc national cœur
     et aire d'adhésion, réserves naturelles dont Étang de Saint-Paul et Réserve marine, Parc
     naturel marin de Mayotte, APB, Conservatoire du littoral, Ramsar, ZNIEFF I / II
@@ -175,7 +177,7 @@ def regulatory_zoning_intersect(layer_id: str, zonings: list | None,
     warnings: list[str] = []
     for item in items:
         try:
-            sources = _sources(item, local, search, crs, max_features)
+            sources = yield from _sources(item, local, search, crs, max_features)
         except (ToolError, ValueError) as exc:
             checklist[item.label] = f"erreur : {exc}"
             rows.append([item.label, None, f"erreur : {exc}", None, None, None, None, None])
@@ -189,7 +191,9 @@ def regulatory_zoning_intersect(layer_id: str, zonings: list | None,
         for source_features, source_crs, name_field, url_field in sources:
             to_project = QgsCoordinateTransform(source_crs, crs, QgsProject.instance())
             count = len(source_features)
-            for feature in source_features:
+            pace = Pacer(f"croisement avec {item.label}", count)
+            for done, feature in enumerate(source_features):
+                yield from pace(done)
                 geometry = QgsGeometry(feature.geometry())
                 if geometry.isEmpty():
                     continue
@@ -279,7 +283,7 @@ def regulatory_zoning_intersect(layer_id: str, zonings: list | None,
                           default=5000, minimum=1, maximum=50000),
 })
 def fetch_wfs_layer(zonings: list, extent_layer_id: str | None, territory: str | None,
-                    buffer_m: float, max_features: int) -> ToolResult:
+                    buffer_m: float, max_features: int) -> Steps:
     """Charge à la demande des zonages officiels (INPN, ONF, Géoportail de l'urbanisme via
     le WFS de la Géoplateforme) sur l'emprise d'une couche ou toute l'île : un GeoPackage
     par zonage dans mcp_outputs/, ajouté au projet dans le SCR de référence (EPSG:2975 /
@@ -318,7 +322,8 @@ def fetch_wfs_layer(zonings: list, extent_layer_id: str | None, territory: str |
             warnings.append(f"{item.label} : pas de flux national ({item.note})")
             continue
         try:
-            features = _wfs_features(item.typename, item.filter, search, crs, max_features)
+            features = yield from _wfs_features(item.typename, item.filter, search, crs,
+                                                max_features)
         except (ToolError, ValueError) as exc:
             warnings.append(f"{item.label} : {exc}")
             continue
@@ -329,7 +334,9 @@ def fetch_wfs_layer(zonings: list, extent_layer_id: str | None, territory: str |
         kind = QgsWkbTypes.multiType(features[0].geometry().wkbType())
         memory = QgsMemoryProviderUtils.createMemoryLayer(item.key, fields, kind, crs)
         copies = []
-        for feature in features:
+        pace = Pacer(f"reprojection de {item.label}", len(features))
+        for done, feature in enumerate(features):
+            yield from pace(done)
             geometry = QgsGeometry(feature.geometry())
             geometry.transform(to_target)
             geometry.convertToMultiType()

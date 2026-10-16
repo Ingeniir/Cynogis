@@ -14,6 +14,7 @@ from qgis.core import (
 from ..core import impacts
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import Pacer, Steps
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
@@ -61,7 +62,7 @@ def _zones(by_nature: dict[str, list[QgsGeometry]], distances: list[float], ring
 
 
 def _intersect(zones: list[tuple[str, QgsGeometry]], habitats, class_field: str,
-               stake_field: str | None, warnings: list[str]):
+               stake_field: str | None, warnings: list[str]) -> Steps:
     """Morceaux d'habitat de chaque zone : (pieces pour le tableau, shapes pour la couche,
     surfaces totales des habitats, surfaces des zones). Zone hors couche : UNMAPPED."""
     da = distance_area(habitats.crs())
@@ -76,7 +77,10 @@ def _intersect(zones: list[tuple[str, QgsGeometry]], habitats, class_field: str,
     totals: dict[tuple[str, str | None], float] = {}
     covered = {label: 0.0 for label in categories}
     fields = [class_field] + ([stake_field] if stake_field else [])
-    for feature, geometry in iter_geometries(habitats, feature_request(habitats, None, fields)):
+    pace = Pacer("croisement avec les habitats", habitats.featureCount())
+    for done, (feature, geometry) in enumerate(
+            iter_geometries(habitats, feature_request(habitats, None, fields))):
+        yield from pace(done)
         habitat = str(group_key(feature[class_field]))
         stake = str(group_key(feature[stake_field])) if stake_field else None
         totals[(habitat, stake)] = totals.get((habitat, stake), 0.0) + area_m2(da, geometry)
@@ -150,7 +154,7 @@ def _distances(indirect_buffers_m: list | None) -> tuple[list[float], list[str]]
 def impact_quantification(footprint_layer_id: str, habitats_layer_id: str, class_field: str,
                           nature_field: str | None, indirect_buffers_m: list | None,
                           stake_field: str | None, create_layer: bool, export_format: str,
-                          output_name: str | None) -> ToolResult:
+                          output_name: str | None) -> Steps:
     """Surfaces d'habitat détruites (impact direct : emprise croisée avec les habitats, par nature
     d'emprise) et dégradées (impact indirect : anneaux autour de l'emprise, emprise exclue),
     par type d'habitat et, avec stake_field, par enjeu. Chaque m² n'est compté qu'une fois,
@@ -177,8 +181,8 @@ def impact_quantification(footprint_layer_id: str, habitats_layer_id: str, class
     warnings: list[str] = []
     zones, _ = _zones(by_nature, distances, rings, warnings)
     categories = [label for label, _ in zones]
-    pieces, shapes, totals, zone_areas = _intersect(zones, habitats, class_field, stake_field,
-                                                    warnings)
+    pieces, shapes, totals, zone_areas = yield from _intersect(
+        zones, habitats, class_field, stake_field, warnings)
 
     headers, rows = impacts.build_table(pieces, totals, categories)
     if not stake_field:  # colonne Enjeu inutile
@@ -257,7 +261,7 @@ def erc_variant_compare(habitats_layer_id: str, class_field: str,
                         stake_weights: dict | None, indirect_buffers_m: list | None,
                         points_layer_id: str | None, points_filter: str | None,
                         reference_variant: str | None, create_layer: bool,
-                        export_format: str, output_name: str | None) -> ToolResult:
+                        export_format: str, output_name: str | None) -> Steps:
     """Démarche ERC, étape « éviter » : compare les variantes d'emprise sur les mêmes
     habitats et chiffre leurs impacts résiduels. Par variante : emprise, impact direct et
     indirect (ha), impact direct par enjeu, habitats touchés, observations sensibles en
@@ -312,8 +316,8 @@ def erc_variant_compare(habitats_layer_id: str, class_field: str,
         notes: list[str] = []
         zones, direct = _zones({"": geometries}, distances, rings, notes)
         categories = [label for label, _ in zones]
-        pieces, shapes, totals, _ = _intersect(zones, habitats, class_field, stake_field,
-                                               notes)
+        pieces, shapes, totals, _ = yield from _intersect(
+            zones, habitats, class_field, stake_field, notes)
         warnings += [f"{name} : {n}" for n in notes]
         mapped_direct = [p for p in pieces if p[2] == impacts.DIRECT and p[0] != UNMAPPED]
         by_stake: dict[str, float] = {}

@@ -25,6 +25,9 @@ class ErrorCode(str, Enum):
     WRITE_FAILED = "WRITE_FAILED"
     NETWORK_ERROR = "NETWORK_ERROR"
     EXECUTION_FAILED = "EXECUTION_FAILED"
+    BUSY = "BUSY"
+    CANCELLED = "CANCELLED"
+    JOB_NOT_FOUND = "JOB_NOT_FOUND"
 
 class ToolError(Exception):
     """Erreur « métier » renvoyée à l'IA avec un code exploitable."""

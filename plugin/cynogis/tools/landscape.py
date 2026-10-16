@@ -38,7 +38,7 @@ from .common import (
     to_json_value,
 )
 from .geoprocessing import OUTPUT_NAME
-from .outputs import run_in_memory, run_to_project, save_to_project
+from .outputs import Steps, run_in_memory, run_to_project, save_to_project
 
 TERRITORY = Param("string", "Territoire, pour restreindre la nomenclature. Défaut : détecté "
                   "depuis l'emprise de la couche.", required=False, enum=("reunion", "mayotte"))
@@ -129,7 +129,7 @@ def suggest_landscape_mapping(layer_id: str, field: str, territory: str | None,
 })
 def classify_landscape(layer_id: str, source_field: str, mapping: dict,
                        default_code: str | None, territory: str | None, merge_adjacent: bool,
-                       min_area_m2: float, output_name: str | None) -> ToolResult:
+                       min_area_m2: float, output_name: str | None) -> Steps:
     """Crée une couche de paysages classés selon la nomenclature Cynogis, champs ajoutés :
     pays_code, pays_lib, pays_grp, pays_surf (m², ellipsoïdal) et pays_resid. Un code hors
     nomenclature fait échouer l'appel. Prépare mapping avec suggest_landscape_mapping."""
@@ -150,8 +150,8 @@ def classify_landscape(layer_id: str, source_field: str, mapping: dict,
     warnings: list[str] = []
     working = layer
     if merge_adjacent:
-        working = run_in_memory("native:dissolve", {"INPUT": layer, "FIELD": [source_field],
-                                                    "SEPARATE_DISJOINT": True})
+        working = (yield from run_in_memory("native:dissolve", {
+            "INPUT": layer, "FIELD": [source_field], "SEPARATE_DISJOINT": True}))
         warnings.append("Taches voisines de même libellé fusionnées avant classement.")
 
     fields = QgsFields(working.fields())
@@ -237,7 +237,7 @@ def classify_landscape(layer_id: str, source_field: str, mapping: dict,
 })
 def extract_ravines(layer_id: str, width_field: str | None, default_width_m: float,
                     protection_buffer_m: float, filter_expression: str | None, dissolve: bool,
-                    output_name: str | None) -> ToolResult:
+                    output_name: str | None) -> Steps:
     """Emprise surfacique des ravines à partir d'un réseau de lignes : chaque tronçon est
     élargi de sa demi-largeur plus la bande de protection. Résultat à croiser avec les
     parcelles (overlay) pour mesurer les surfaces contraintes."""
@@ -252,8 +252,8 @@ def extract_ravines(layer_id: str, width_field: str | None, default_width_m: flo
     source: Any = layer
     if filter_expression:
         prepare_expression(filter_expression, layer, "filter_expression")
-        source = run_in_memory("native:extractbyexpression",
-                               {"INPUT": layer, "EXPRESSION": filter_expression})
+        source = (yield from run_in_memory("native:extractbyexpression",
+                                           {"INPUT": layer, "EXPRESSION": filter_expression}))
     half_default = float(default_width_m) / 2.0 + float(protection_buffer_m)
     if width_field:
         column = QgsExpression.quotedColumnRef(require_field(layer, width_field))
@@ -261,11 +261,11 @@ def extract_ravines(layer_id: str, width_field: str | None, default_width_m: flo
             f"coalesce({column}, {float(default_width_m)}) / 2 + {float(protection_buffer_m)}")
     else:
         distance = half_default
-    result = run_to_project("native:buffer", {
+    result = (yield from run_to_project("native:buffer", {
         "INPUT": source, "DISTANCE": distance, "SEGMENTS": 8,
         "END_CAP_STYLE": 0, "JOIN_STYLE": 0,  # arrondis : pas d'encoche entre tronçons
         "MITER_LIMIT": 2, "DISSOLVE": bool(dissolve),
-    }, output_name or f"ravines_{layer.name()}")
+    }, output_name or f"ravines_{layer.name()}"))
     result.data.update({"default_width_m": float(default_width_m),
                         "protection_buffer_m": float(protection_buffer_m),
                         "width_field": width_field, "dissolved": bool(dissolve)})
@@ -290,7 +290,7 @@ NDVI_FORMULA = (f"where((A + B) == 0, {NDVI_NO_DATA}, "
     "output_name": OUTPUT_NAME,
 })
 def compute_ndvi(layer_id: str, red_band: int, nir_band: int, nir_layer_id: str | None,
-                 output_name: str | None) -> ToolResult:
+                 output_name: str | None) -> Steps:
     """Calcule l'NDVI (PIR - R) / (PIR + R), raster de -1 à 1 (.tif dans mcp_outputs/), à
     utiliser avec check_landscape. Vérifie avec get_layer_info l'ordre des bandes de l'image
     (Pléiades : rouge 1, PIR 4 ; Sentinel-2 : B04 rouge, B08 PIR)."""
@@ -305,10 +305,10 @@ def compute_ndvi(layer_id: str, red_band: int, nir_band: int, nir_layer_id: str 
     if red.crs() != nir.crs():
         raise ToolError(ErrorCode.INVALID_PARAMS, f"{red.name()} et {nir.name()} n'ont pas le "
                         "même SCR : reprojette l'une des deux (gdal:warpreproject).")
-    result = run_to_project("gdal:rastercalculator", {
+    result = (yield from run_to_project("gdal:rastercalculator", {
         "INPUT_A": red, "BAND_A": red_band, "INPUT_B": nir, "BAND_B": nir_band,
         "FORMULA": NDVI_FORMULA, "NO_DATA": NDVI_NO_DATA, "EXTENT_OPT": 3, "RTYPE": 5,
-    }, output_name or f"ndvi_{red.name()}")
+    }, output_name or f"ndvi_{red.name()}"))
     result.data.update({"red": f"{red.name()} bande {red_band}",
                         "nir": f"{nir.name()} bande {nir_band}",
                         "next_step": "check_landscape avec ce raster (ndvi_layer_id)."})

@@ -24,6 +24,7 @@ from ..core import proximity
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
 from ..core.fields import unique_field_name
+from ..core.jobs import Pacer
 from ..core.metrics import M2_PER_HA
 from ..core.registry import Level, tool
 from ..core.schema import Param
@@ -49,7 +50,7 @@ from .common import (
 from .export import TABLE_FORMATS, write_table
 from .features import FILTER_HELP
 from .geoprocessing import OUTPUT_NAME
-from .outputs import run_in_memory, save_to_project
+from .outputs import Steps, run_in_memory, save_to_project
 
 HULL_METHODS = ("ordered", "convex_hull", "concave_hull", "buffer")
 MATRIX_FORMATS = ("matrix", "pairs")
@@ -234,7 +235,7 @@ def count_observations(point_layer_id: str, polygon_layer_id: str | None,
                        grid_size_m: float | None, taxon_field: str | None,
                        count_field: str | None, protected_expression: str | None,
                        invasive_expression: str | None,
-                       point_filter: str | None, output_name: str | None) -> ToolResult:
+                       point_filter: str | None, output_name: str | None) -> Steps:
     """Couche de synthèse des observations par polygone d'habitat ou par maille, à
     cartographier : nb_obs, richesse (taxons distincts), effectif (somme), taxons (liste),
     plus les champs des polygones d'habitat. Avec protected_expression / invasive_expression :
@@ -254,10 +255,12 @@ def count_observations(point_layer_id: str, polygon_layer_id: str | None,
         raise ToolError(ErrorCode.INVALID_PARAMS, "protected_expression et "
                         "invasive_expression requièrent taxon_field.")
     flagged: dict[str, set[int]] = {}
+    pace = Pacer("statut des observations")
     for key, text in statuses.items():
         expression, context = prepare_expression(text, points, f"{key}_expression")
         flagged[key] = set()
         for feature in points.getFeatures(feature_request(points, point_filter, None, False)):
+            yield from pace()
             context.setFeature(feature)
             if expression.evaluate(context):
                 flagged[key].add(feature.id())
@@ -366,7 +369,7 @@ def _eee_patches(layer: QgsVectorLayer, crs: Any, expression: str | None,
 })
 def invasive_species_map(polygon_layer_id: str, eee_layer_id: str, eee_filter: str | None,
                          taxon_field: str | None, cover_field: str | None,
-                         output_name: str | None) -> ToolResult:
+                         output_name: str | None) -> Steps:
     """Pression des espèces exotiques envahissantes par polygone, en couche à cartographier.
     Points : eee_nb (observations), eee_dens (observations / ha). Taches : eee_nb (taches),
     eee_ha (surface envahie, pondérée par cover_field ; sans lui, taches qui se chevauchent
@@ -414,7 +417,10 @@ def invasive_species_map(polygon_layer_id: str, eee_layer_id: str, eee_filter: s
     features: list[QgsFeature] = []
     taxa_total: Counter = Counter()
     over = 0
-    for feature, polygon in iter_geometries(polygons, feature_request(polygons)):
+    pace = Pacer("cartographie des EEE", polygons.featureCount())
+    for done, (feature, polygon) in enumerate(iter_geometries(polygons,
+                                                              feature_request(polygons))):
+        yield from pace(done)
         area = area_m2(da, polygon)
         values: dict[str, Any] = {}
         taxa: Counter = Counter()
@@ -791,7 +797,7 @@ SENSITIVE_HEADERS = ["Catégorie", "Entité", "Distance à l'emprise (m)", "Seui
 })
 def distance_to_sensitive_features(footprint_layer_id: str, sensitive: list,
                                    max_distance_m: float, create_layer: bool,
-                                   export_format: str, output_name: str | None) -> ToolResult:
+                                   export_format: str, output_name: str | None) -> Steps:
     """Distance bord à bord (ellipsoïdale) de chaque entité sensible à l'emprise du projet,
     par catégorie, avec statut : dans l'emprise, sous le seuil de recul, au-delà. Tableau
     trié du plus proche au plus lointain, synthèse par catégorie (nombre, plus proche,
@@ -826,7 +832,9 @@ def distance_to_sensitive_features(footprint_layer_id: str, sensitive: list,
                                   else [])
         stats = summary.setdefault(label, {"count": 0, "inside": 0, "under_threshold": 0,
                                            "nearest_m": None, "threshold_m": threshold})
+        pace = Pacer(f"distances à {label}")
         for feature, geometry in iter_geometries(layer, request, crs):
+            yield from pace()
             if not geometry.boundingBox().intersects(search):
                 continue
             inside = engine.intersects(geometry.constGet())
@@ -898,7 +906,7 @@ def distance_to_sensitive_features(footprint_layer_id: str, sensitive: list,
     "output_name": OUTPUT_NAME,
 })
 def distance_layer(layer_id: str, target_layer_id: str, mode: str, k: int,
-                   max_distance_m: float | None, output_name: str | None) -> ToolResult:
+                   max_distance_m: float | None, output_name: str | None) -> Steps:
     """Couche de lignes reliant chaque entité à ses k plus proches entités cibles (nouvelle
     couche à cartographier) : attributs des deux entités et distance en mètres sur
     l'ellipsoïde (champ distance). Pour un simple tableau : nearest_features."""
@@ -913,7 +921,7 @@ def distance_layer(layer_id: str, target_layer_id: str, mode: str, k: int,
                             f"({source.crs().authid()}) : reprojette {source.name()} "
                             "(EPSG:2975 / EPSG:4471) ou retire max_distance_m.")
         params["DISTANCE"] = float(max_distance_m)
-    lines = run_in_memory("native:shortestline", params)
+    lines = (yield from run_in_memory("native:shortestline", params))
     # La distance de l'algorithme est planaire, dans le SCR source : remplacée par l'ellipsoïdale.
     da = distance_area(lines.crs())
     index = lines.fields().indexOf("distance")

@@ -23,7 +23,7 @@ from .common import (
     make_field,
 )
 from .geoprocessing import OUTPUT_NAME
-from .outputs import run_to_project, save_to_project
+from .outputs import Steps, run_to_project, save_to_project
 
 DERIVATIVES = {
     "slope": ("native:slope", "pente",
@@ -77,25 +77,25 @@ def list_slope_classes() -> dict:
     "output_name": OUTPUT_NAME,
 })
 def derive_terrain(layer_id: str, derivative: str, z_factor: float,
-                   output_name: str | None) -> ToolResult:
+                   output_name: str | None) -> Steps:
     """Calcule la pente, l'exposition, l'ombrage ou l'accumulation de flux d'un MNT (nouveau
     raster .tif dans mcp_outputs/). Le MNT doit être en SCR métrique (EPSG:2975, EPSG:4471)."""
     layer = _metric_raster(layer_id)
     if derivative == "flow_accumulation":
-        return _flow_accumulation(layer, output_name or f"accumulation_{layer.name()}")
+        return (yield from _flow_accumulation(layer, output_name or f"accumulation_{layer.name()}"))
     algorithm, label, note = DERIVATIVES[derivative]
-    result = run_to_project(algorithm, {"INPUT": layer, "Z_FACTOR": float(z_factor)},
-                            output_name or f"{label}_{layer.name()}")
+    result = (yield from run_to_project(algorithm, {"INPUT": layer, "Z_FACTOR": float(z_factor)},
+                                        output_name or f"{label}_{layer.name()}"))
     result.data.update({"derivative": derivative, "note": note})
     return result
 
 
-def _flow_accumulation(layer, output_name: str) -> ToolResult:
+def _flow_accumulation(layer, output_name: str) -> Steps:
     registry = QgsApplication.processingRegistry()
     for algorithm, dem_param, fixed, output in FLOW_ALGORITHMS:
         if registry.algorithmById(algorithm) is not None:
-            result = run_to_project(algorithm, {dem_param: layer, **fixed}, output_name,
-                                    extra_outputs=(output,))
+            result = (yield from run_to_project(algorithm, {dem_param: layer, **fixed}, output_name,
+                                                extra_outputs=(output,)))
             result.data.update({"derivative": "flow_accumulation", "provider": algorithm,
                                 "note": FLOW_NOTE})
             return result
@@ -115,24 +115,24 @@ def _flow_accumulation(layer, output_name: str) -> ToolResult:
     "output_name": OUTPUT_NAME,
 })
 def classify_slope(layer_id: str, unit: str, vectorize: bool,
-                   output_name: str | None) -> ToolResult:
+                   output_name: str | None) -> Steps:
     """Reclasse un raster de pente en 5 classes d'aménagement (1 plat à faible … 5 escarpée,
     voir list_slope_classes) ; avec vectorize, polygones à croiser avec les parcelles
     (overlay) pour mesurer les surfaces par classe."""
     layer = get_raster_layer(layer_id)
     name = output_name or f"classes_pente_{layer.name()}"
-    result = run_to_project("native:reclassifybytable", {
+    result = (yield from run_to_project("native:reclassifybytable", {
         "INPUT_RASTER": layer, "RASTER_BAND": 1,
         "TABLE": [value for row in relief.reclass_table(unit) for value in row],
         "NO_DATA": NO_DATA, "RANGE_BOUNDARIES": RANGE_MIN_INCLUSIVE, "DATA_TYPE": BYTE,
-    }, name)
+    }, name))
     result.data.update({"unit": unit,
                         "classes": [item.to_dict() for item in relief.SLOPE_CLASSES]})
     if vectorize:
         raster_path = result.data["outputs"][0]["path"]
-        polygons = run_to_project("gdal:polygonize", {
+        polygons = (yield from run_to_project("gdal:polygonize", {
             "INPUT": raster_path, "BAND": 1, "FIELD": "classe", "EIGHT_CONNECTEDNESS": False,
-        }, f"{name}_poly")
+        }, f"{name}_poly"))
         result.data["polygons"] = polygons.data["outputs"]
         result.warnings.extend(w for w in polygons.warnings if w not in result.warnings)
         result.outputs.extend(polygons.outputs)
@@ -380,7 +380,7 @@ ZONAL_STATS = ("count", "sum", "mean", "median", "stdev", "min", "max", "range",
     "output_name": OUTPUT_NAME,
 })
 def zonal_statistics(raster_id: str, polygon_layer_id: str, band: int, stats: list[str],
-                     prefix: str, output_name: str | None) -> ToolResult:
+                     prefix: str, output_name: str | None) -> Steps:
     """Statistiques d'un raster dans chaque polygone (nouvelle couche, attributs des
     polygones conservés) : altitude moyenne par parcelle, NDVI moyen par habitat, classe
     majoritaire d'une carte d'occupation du sol. Un pixel compte s'il a son centre dans le
@@ -395,10 +395,10 @@ def zonal_statistics(raster_id: str, polygon_layer_id: str, band: int, stats: li
                         f"{raster.name()} n'a que {raster.bandCount()} bande(s).")
     if not stats:
         raise ToolError(ErrorCode.INVALID_PARAMS, "stats ne peut pas être vide.")
-    result = run_to_project("native:zonalstatisticsfb", {
+    result = (yield from run_to_project("native:zonalstatisticsfb", {
         "INPUT": polygons, "INPUT_RASTER": raster, "RASTER_BAND": band,
         "COLUMN_PREFIX": prefix, "STATISTICS": [ZONAL_STATS.index(s) for s in dict.fromkeys(stats)],
-    }, output_name or f"zonal_{polygons.name()}")
+    }, output_name or f"zonal_{polygons.name()}"))
     result.data["fields_added"] = [prefix + s for s in dict.fromkeys(stats)]
     if raster.crs() != polygons.crs():
         result.warnings.append(f"SCR différents ({polygons.crs().authid()} / "

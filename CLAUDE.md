@@ -23,6 +23,7 @@ Une ligne JSON UTF-8 par message.
 - Requête : `{"v":1,"id":str,"token":str,"method":str,"params":{}}`
 - Réponse OK : `{"v":1,"id","ok":true,"audit_id","data","warnings":[]}`
 - Réponse erreur : `{"v":1,"id","ok":false,"audit_id","error":{"code","message","details"}}` — codes dans `core/errors.py::ErrorCode`.
+- Réponse « job » (traitement Processing) : `ok:true` + `job_id` + `data` = avancement, renvoyée tout de suite. Le serveur MCP (`app.py::_wait_job`) interroge `get_job_status` jusqu'à la réponse finale (même forme qu'une réponse normale, sans `job_id`) et appelle `cancel_job` sur annulation MCP ou après 1 h. Ces deux outils sont internes (invisibles pour l'IA). Pendant un job, seuls les outils `READ` passent (sinon `BUSY`).
 
 `PROTOCOL_VERSION` et `MAX_MESSAGE_BYTES` sont dupliqués dans `plugin/cynogis/bridge/protocol.py` et `server/src/cynogis_server/client.py` : les modifier aux deux endroits.
 
@@ -40,7 +41,7 @@ Tout se passe dans le plugin ; rien à modifier côté serveur.
 
 ## Sorties (outils de niveau CREATE)
 
-- Toujours passer par `tools/outputs.py::run_to_project(algorithm_id, params, output_name)` : écrit un GeoPackage (`.tif` pour un raster) neuf dans `<projet>/mcp_outputs/` (repli `~/.cynogis/mcp_outputs` + warning si projet non enregistré), nom nettoyé par `core/naming.py`, **jamais d'écrasement** (suffixe `_2`, `_3`…), couche ajoutée au groupe « Cynogis ».
+- Toujours passer par `tools/outputs.py::run_to_project(algorithm_id, params, output_name)`, avec `yield from` (`result = (yield from run_to_project(...))`) : écrit un GeoPackage (`.tif` pour un raster) neuf dans `<projet>/mcp_outputs/` (repli `~/.cynogis/mcp_outputs` + warning si projet non enregistré), nom nettoyé par `core/naming.py`, **jamais d'écrasement** (suffixe `_2`, `_3`…), couche ajoutée au groupe « Cynogis ».
 - Résultat calculé en Python (ex. `resolve_overlaps`) : remplir une couche mémoire puis `save_to_project(couche_memoire, nom)` (même résultat que `run_to_project` ; ne pas passer par `native:savefeatures`, dont la sortie « fichier » est mal typée sous QGIS 4.2).
 - `run_algorithm` n'accepte que la liste blanche `ALGORITHMS` de `core/algorithms.py` (catalogue pur, testé ; ajouter un `AlgorithmSpec` = autoriser l'algorithme) ; les paramètres de sortie sont imposés par Cynogis, jamais par l'IA.
 
@@ -49,7 +50,7 @@ Tout se passe dans le plugin ; rien à modifier côté serveur.
 - `plugin/cynogis/__init__.py`, `core/*.py` (sauf `core/log.py`), `bridge/protocol.py` : **aucun import `qgis`** (testés sans QGIS dans `tests/unit/`). La logique testable va là ; `tools/` contient le code PyQGIS.
 - Chaque sous-dossier du plugin doit avoir un `__init__.py` (même vide) : sans lui, le hook d'import de QGIS ne suit pas les modules, ils survivent au déchargement et un rechargement mélange anciennes et nouvelles classes.
 - Imports Qt sensibles à la version (ex. `QAction`) → passer par `compat.py`. Cible : QGIS 3.x (Qt5) et 4.x (Qt6).
-- Les handlers tournent sur le thread principal de QGIS : pas d'appel bloquant long (QGIS gèle, et le client abandonne après 120 s).
+- Les handlers tournent sur le thread principal de QGIS. Tout algorithme Processing passe par `run_to_project` / `run_in_memory` **avec `yield from`** : l'outil devient un générateur exécuté comme un job (`core/jobs.py`), l'algorithme tourne dans une `QgsTask` (`tools/tasks.py`) et QGIS ne gèle pas. Jamais de `processing.run` direct ; un appel sans `yield from` renvoie un générateur au lieu du résultat. Téléchargement HTTP : céder `Fetch(url, authcfg, libellé, geojson=...)` (`core/jobs.py`), exécuté dans une `QgsTask` avec le gestionnaire réseau de QGIS ; jamais de `QgsBlockingNetworkRequest` sur le thread principal. Repli automatique sur le thread principal (interface repeinte) si l'algorithme est `NoThreading` ou si une couche d'entrée est en édition. Le code Python entre deux étapes reste sur le thread principal : dans une boucle longue (parcours d'une couche entière avec opérations géométriques), créer `pace = Pacer("libellé", total)` (`core/jobs.py`) et appeler `yield from pace(i)` en tête de boucle, ce qui rend la main à QGIS toutes les 100 ms. Un helper qui cède des pauses est appelé avec `yield from` dans un outil, ou avec `run_now(...)` hors job (volume borné). Une suppression de couche ou la fermeture du projet annule le job en cours (`plugin.py::_cancel_jobs`).
 - Logger : `logging.getLogger("cynogis...")` uniquement (seul le logger `cynogis` est redirigé vers le journal QGIS, onglet « Cynogis »).
 - Le serveur MCP communique en stdio : ne jamais `print()` sur stdout dans `cynogis_server` (logs → stderr).
 - Le venv (Python 3.14) n'est pas le Python de QGIS (3.12) : le code du plugin doit rester compatible avec le Python de QGIS.
