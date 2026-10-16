@@ -7,6 +7,7 @@ from qgis.core import Qgis, QgsFeatureRequest, QgsGeometry, QgsVectorLayer
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import Pacer, Steps
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
@@ -118,15 +119,15 @@ def _error_kind(message: str) -> str:
                          default=20, minimum=1, maximum=200),
 })
 def check_geometries(layer_id: str, filter_expression: str | None,
-                     sample_size: int) -> ToolResult:
+                     sample_size: int) -> Steps:
     """Contrôle qualité des géométries (moteur GEOS) : nulles ou vides, invalides (auto-
     intersection, anneau mal fermé…), multi-parties. Renvoie les types d'erreurs, et le fid et la
     localisation d'un échantillon. À lancer avant toute superposition ou mesure de surface."""
     layer = get_vector_layer(layer_id)
     if geometry_kind(layer) in ("none", "unknown"):
         raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} n'a pas de géométrie.")
-    data = geometry_report(layer, feature_request(layer, filter_expression, [], True),
-                           sample_size)
+    data = yield from geometry_report(
+        layer, feature_request(layer, filter_expression, [], True), sample_size)
     warnings = []
     if data["invalid"] or data["null_or_empty"]:
         warnings.append(f"{data['invalid']} géométrie(s) invalide(s) et {data['null_or_empty']} "
@@ -136,12 +137,15 @@ def check_geometries(layer_id: str, filter_expression: str | None,
 
 
 def geometry_report(layer: QgsVectorLayer, request: QgsFeatureRequest,
-                    sample_size: int) -> dict[str, Any]:
-    """Comptage des géométries nulles, invalides (GEOS) et multi-parties d'une couche."""
+                    sample_size: int) -> Steps:
+    """Comptage des géométries nulles, invalides (GEOS) et multi-parties d'une couche
+    (dict). Générateur : « yield from » dans un outil, run_now ailleurs."""
     checked = empty = invalid = multipart = 0
     error_types: Counter[str] = Counter()
     samples: list[dict[str, Any]] = []
+    pace = Pacer("contrôle des géométries", layer.featureCount())
     for feature in layer.getFeatures(request):
+        yield from pace(checked)
         checked += 1
         geom = feature.geometry()
         if geom.isNull() or geom.isEmpty():

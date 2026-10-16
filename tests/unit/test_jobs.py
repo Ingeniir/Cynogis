@@ -7,7 +7,7 @@ from cynogis.bridge.protocol import PROTOCOL_VERSION, Response, decode_request
 from cynogis.core.audit import AuditLog
 from cynogis.core.dispatcher import Dispatcher, ToolResult
 from cynogis.core.errors import ErrorCode, ToolError
-from cynogis.core.jobs import AlgCall
+from cynogis.core.jobs import AlgCall, Pacer, Pause, run_now
 from cynogis.core.registry import Level, ToolRegistry, tool
 from cynogis.core.schema import Param
 
@@ -22,6 +22,7 @@ class FakeExecutor:
 
     def __init__(self, fail_start=False):
         self.started, self.cancelled, self.fail_start = [], [], fail_start
+        self.paused = []
 
     def start(self, step, done):
         if self.fail_start:
@@ -35,8 +36,14 @@ class FakeExecutor:
     def cancel(self, handle):
         self.cancelled.append(handle)
 
+    def pause(self, resume):
+        self.paused.append(resume)
+
     def finish(self, value=None, error=None):
         self.started[-1][1](value, error)
+
+    def resume(self):
+        self.paused.pop(0)()
 
 
 @tool(level=Level.CREATE, params={"n": Param("integer", "Nombre")})
@@ -62,6 +69,17 @@ def erreur_avant():
     yield
 
 
+@tool(level=Level.READ, params={"n": Param("integer", "Nombre")})
+def boucle(n):
+    """Boucle Python avec points de pause."""
+    pace = Pacer("boucle", n, interval_s=0)
+    total = 0
+    for i in range(n):
+        yield from pace(i)
+        total += i
+    return {"total": total}
+
+
 @tool(level=Level.READ)
 def lecture():
     """Lecture seule."""
@@ -70,7 +88,7 @@ def lecture():
 
 def make(tmp_path, executor=None):
     registry = ToolRegistry()
-    registry.register(calcul, sans_etape, erreur_avant, lecture)
+    registry.register(calcul, sans_etape, erreur_avant, boucle, lecture)
     executor = executor or FakeExecutor()
     audit = AuditLog(tmp_path)
     return Dispatcher(registry, audit=audit, executor=executor), executor, audit
@@ -146,6 +164,49 @@ def test_job_inconnu_et_outils_internes_caches(tmp_path):
     resp = d.dispatch(_req("get_job_status", job_id="absent"))
     assert resp.error["code"] == "JOB_NOT_FOUND"
     assert "get_job_status" not in d.registry.names and "cancel_job" not in d.registry.names
+
+
+def test_boucle_avec_pauses(tmp_path):
+    d, ex, _ = make(tmp_path)
+    resp = d.dispatch(_req("boucle", n=4))
+    assert resp.job_id and resp.data["algorithm"] == "boucle" and resp.data["progress"] == 0
+    ex.resume()
+    ex.resume()
+    status = d.dispatch(_req("get_job_status", job_id=resp.job_id))
+    assert status.data["progress"] == 50.0 and status.data["step"] == 0
+    ex.resume()
+    ex.resume()
+    final = d.dispatch(_req("get_job_status", job_id=resp.job_id))
+    assert final.data == {"total": 6} and not ex.paused
+
+
+def test_annulation_pendant_une_pause(tmp_path):
+    d, ex, _ = make(tmp_path)
+    job_id = d.dispatch(_req("boucle", n=4)).job_id
+    d.dispatch(_req("cancel_job", job_id=job_id))
+    ex.resume()  # la reprise programmée arrive après l'annulation : ignorée
+    assert not ex.paused
+    assert d.dispatch(_req("get_job_status", job_id=job_id)).error["code"] == "CANCELLED"
+
+
+def test_pacer_ne_cede_qu_apres_l_intervalle():
+    lent = Pacer("x", interval_s=3600)
+    assert list(lent()) == []
+    rapide = Pacer("x", total=8, interval_s=0)
+    assert list(rapide(2)) == [Pause("x", 25.0)]
+
+
+def test_run_now():
+    def steps():
+        yield Pause("x")
+        return 42
+
+    def algo():
+        yield AlgCall("native:a", {})
+
+    assert run_now(steps()) == 42
+    with pytest.raises(TypeError):
+        run_now(algo())
 
 
 def test_response_encode_job_id():

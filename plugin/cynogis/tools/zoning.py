@@ -24,6 +24,7 @@ from qgis.core import (
 from ..core import zoning
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import Pacer, Steps
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.territory import TERRITORIES, detect_territory
@@ -130,7 +131,7 @@ def _sources(item: zoning.Zoning, local: dict[str, list[dict]], search: QgsRecta
 def regulatory_zoning_intersect(layer_id: str, zonings: list | None,
                                 local_layers: list | None, search_distance_m: float,
                                 create_layer: bool, export_format: str, max_features: int,
-                                output_name: str | None) -> ToolResult:
+                                output_name: str | None) -> Steps:
     """Croise le projet avec les zonages réglementaires et d'inventaire (Parc national cœur
     et aire d'adhésion, réserves naturelles dont Étang de Saint-Paul et Réserve marine, Parc
     naturel marin de Mayotte, APB, Conservatoire du littoral, Ramsar, ZNIEFF I / II
@@ -189,7 +190,9 @@ def regulatory_zoning_intersect(layer_id: str, zonings: list | None,
         for source_features, source_crs, name_field, url_field in sources:
             to_project = QgsCoordinateTransform(source_crs, crs, QgsProject.instance())
             count = len(source_features)
-            for feature in source_features:
+            pace = Pacer(f"croisement avec {item.label}", count)
+            for done, feature in enumerate(source_features):
+                yield from pace(done)
                 geometry = QgsGeometry(feature.geometry())
                 if geometry.isEmpty():
                     continue

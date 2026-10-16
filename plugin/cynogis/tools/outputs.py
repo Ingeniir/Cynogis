@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +17,7 @@ from qgis.core import (
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
-from ..core.jobs import AlgCall
+from ..core.jobs import AlgCall, Steps
 from ..core.naming import clean_name, unique_path
 from .common import to_json_value
 
@@ -68,7 +67,6 @@ def is_optional(param: Any) -> bool:
 # « x = (yield from run_to_project(...)) » et devient lui-même un générateur. L'outil est alors
 # exécuté comme un job (core/jobs.py) : l'algorithme tourne hors du thread principal et QGIS
 # ne gèle pas. Ne jamais appeler ces fonctions sans « yield from ».
-Steps = Generator[AlgCall, Any, Any]
 
 
 def _run(algorithm_id: str, params: dict[str, Any]) -> Steps:

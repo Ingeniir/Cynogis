@@ -20,6 +20,7 @@ from qgis.PyQt.QtCore import QMetaType
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import Pacer
 from ..core.registry import Level, tool
 from ..core.resolve import (
     ORDERS,
@@ -44,7 +45,7 @@ from .common import (
 )
 from .features import FILTER_HELP
 from .geoprocessing import OUTPUT_NAME
-from .outputs import save_to_project
+from .outputs import Steps, save_to_project
 
 
 @tool(level=Level.READ, params={
@@ -61,7 +62,7 @@ from .outputs import save_to_project
                    required=False, default=100, minimum=1, maximum=500),
 })
 def detect_overlaps(layer_id: str, other_layer_id: str | None, min_area_m2: float,
-                    area_unit: str, filter_expression: str | None, limit: int) -> ToolResult:
+                    area_unit: str, filter_expression: str | None, limit: int) -> Steps:
     """Détecte les chevauchements entre polygones : à l'intérieur d'une couche, ou entre deux
     couches (reprojection automatique). Renvoie les paires de fid qui se chevauchent avec la
     surface commune (mesure ellipsoïdale), triées par surface décroissante, et la surface totale.
@@ -87,7 +88,9 @@ def detect_overlaps(layer_id: str, other_layer_id: str | None, min_area_m2: floa
     index = QgsSpatialIndex()
     geoms_b: dict[int, QgsGeometry] = {}
     transform_failures = 0
+    pace = Pacer("lecture des polygones")
     for feature in layer_b.getFeatures(request_b):
+        yield from pace()
         geom = feature.geometry()
         if geom.isNull() or geom.isEmpty():
             continue
@@ -109,7 +112,9 @@ def detect_overlaps(layer_id: str, other_layer_id: str | None, min_area_m2: floa
                   layer_a.getFeatures(feature_request(layer_a, filter_expression, [], True)))
     pairs: list[tuple[float, int, int]] = []
     checked = failures = 0
+    pace = Pacer("recherche des chevauchements", len(geoms_b) if internal else None)
     for fid_a, geom_a in source:
+        yield from pace(checked)
         if geom_a.isNull() or geom_a.isEmpty():
             continue
         checked += 1
@@ -208,7 +213,7 @@ def _closer_parts(fid: int, neighbours: list[int], geoms: dict[int, QgsGeometry]
     "output_name": OUTPUT_NAME,
 })
 def resolve_overlaps(layer_id: str, strategy: str, priority_field: str | None,
-                     priority_order: str, output_name: str | None) -> ToolResult:
+                     priority_order: str, output_name: str | None) -> Steps:
     """Produit une copie de la couche SANS chevauchements : chaque zone couverte par plusieurs
     polygones est attribuée à un seul selon la stratégie ; les autres sont découpés. Attributs
     conservés + champs de contrôle cyn_statut (unchanged/clipped), cyn_aire_av et cyn_aire_ap
@@ -230,7 +235,9 @@ def resolve_overlaps(layer_id: str, strategy: str, priority_field: str | None,
     records: list[dict[str, Any]] = []
     index = QgsSpatialIndex()
     repaired = 0
+    pace = Pacer("lecture des polygones", layer.featureCount())
     for order, feature in enumerate(layer.getFeatures()):
+        yield from pace(order)
         geom = feature.geometry()
         if geom.isNull() or geom.isEmpty():
             continue
@@ -268,7 +275,9 @@ def resolve_overlaps(layer_id: str, strategy: str, priority_field: str | None,
     entries: list[dict[str, Any]] = []
     removed: list[int] = []
     failed: list[int] = []
-    for fid in sorted(geoms, key=ranks.__getitem__):
+    pace = Pacer("découpe des chevauchements", len(geoms))
+    for done, fid in enumerate(sorted(geoms, key=ranks.__getitem__)):
+        yield from pace(done)
         geom = geoms[fid]
         neighbours = [n for n in index.intersects(geom.boundingBox())
                       if n != fid and geoms[n].intersects(geom)]

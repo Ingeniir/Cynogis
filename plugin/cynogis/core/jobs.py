@@ -5,6 +5,10 @@ Un outil qui lance des algorithmes Processing est un générateur : il cède une
 QgsTask et rappelle quand elle est finie, sur le thread principal ; le générateur reprend alors
 avec les résultats. Entre deux étapes, la boucle d'événements de QGIS est libre.
 
+Une boucle Python longue cède des Pause (via Pacer) : la boucle d'événements traite ce qui
+attend (affichage, requêtes du pont) puis la boucle reprend. Un outil qui cède une Pause est
+un job comme un autre.
+
 Côté pont, la requête reçoit tout de suite un job_id ; le serveur MCP attend la fin en
 interrogeant get_job_status. Un seul job à la fois.
 """
@@ -20,6 +24,7 @@ from .errors import ErrorCode, ToolError
 
 RUNNING, DONE, FAILED, CANCELLED = "running", "done", "failed", "cancelled"
 KEEP_FINISHED = 20  # jobs terminés gardés pour get_job_status
+PAUSE_INTERVAL_S = 0.1  # une boucle Python rend la main au plus toutes les 100 ms
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,46 @@ class AlgCall:
     params: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class Pause:
+    """Étape cédée par une boucle Python : rendre la main à la boucle d'événements."""
+
+    label: str
+    progress: float | None = None  # 0 à 100 si le total est connu
+
+
+class Pacer:
+    """Points de pause d'une boucle : « yield from pace(i) » cède une Pause si la dernière
+    date de plus de interval_s, sinon ne fait rien (coût : une lecture d'horloge)."""
+
+    def __init__(self, label: str, total: int | None = None,
+                 interval_s: float = PAUSE_INTERVAL_S) -> None:
+        self.label, self.total, self.interval_s = label, total, interval_s
+        self._last = time.monotonic()
+
+    def __call__(self, done: int | None = None) -> Generator[Pause, Any, None]:
+        if time.monotonic() - self._last < self.interval_s:
+            return
+        progress = 100.0 * done / self.total if self.total and done is not None else None
+        yield Pause(self.label, progress)
+        self._last = time.monotonic()
+
+
+def run_now(steps: Generator[Pause, Any, Any]) -> Any:
+    """Déroule d'un coup un générateur qui ne cède que des Pause (appel hors job, sur un
+    volume borné), et renvoie son résultat."""
+    try:
+        while True:
+            step = next(steps)
+            if not isinstance(step, Pause):
+                raise TypeError(f"Étape inattendue hors job : {step!r}")
+    except StopIteration as stop:
+        return stop.value
+
+
+Step = AlgCall | Pause
+# Type de retour des outils et helpers qui cèdent des étapes (appel avec « yield from »).
+Steps = Generator[Step, Any, Any]
 Done = Callable[[Any, "BaseException | None"], None]  # (résultats, erreur)
 
 
@@ -45,6 +90,10 @@ class Executor(Protocol):
 
     def cancel(self, handle: Any) -> None: ...
 
+    def pause(self, resume: Callable[[], None]) -> None:
+        """Appelle resume depuis la boucle d'événements, une fois ce qui attend traité."""
+        ...
+
 
 Finisher = Callable[[Any, "BaseException | None"], Any]  # (résultat, erreur) → réponse finale
 
@@ -53,12 +102,13 @@ Finisher = Callable[[Any, "BaseException | None"], Any]  # (résultat, erreur) �
 class Job:
     id: str
     tool: str
-    generator: Generator[AlgCall, Any, Any]
+    generator: Generator[Step, Any, Any]
     finisher: Finisher
     status: str = RUNNING
     step: int = 0
     algorithm: str = ""
-    handle: Any = None
+    handle: Any = None     # étape Processing en cours, None pendant une boucle Python
+    progress: float | None = None  # avancement annoncé par la dernière Pause
     response: Any = None   # réponse finale, fournie par finisher
     started: float = field(default_factory=time.monotonic)
     finished: float | None = None
@@ -73,7 +123,7 @@ class JobManager:
     def running(self) -> Job | None:
         return next((j for j in self._jobs.values() if j.status == RUNNING), None)
 
-    def start(self, tool: str, generator: Generator[AlgCall, Any, Any], first: AlgCall,
+    def start(self, tool: str, generator: Generator[Step, Any, Any], first: Step,
               finisher: Finisher) -> Job:
         """Démarre un job dont le générateur vient de céder sa première étape."""
         job = Job(uuid.uuid4().hex[:12], tool, generator, finisher)
@@ -90,7 +140,12 @@ class JobManager:
         return job
 
     def status(self, job: Job) -> dict[str, Any]:
-        progress = self.executor.progress(job.handle) if job.status == RUNNING else 100.0
+        if job.status != RUNNING:
+            progress = 100.0
+        elif job.handle is not None:
+            progress = self.executor.progress(job.handle)
+        else:
+            progress = job.progress or 0.0
         return {"job_id": job.id, "tool": job.tool, "status": job.status, "step": job.step,
                 "algorithm": job.algorithm, "progress": round(progress, 1),
                 "elapsed_s": round((job.finished or time.monotonic()) - job.started, 1)}
@@ -109,11 +164,15 @@ class JobManager:
 
     # --- Déroulement ---------------------------------------------------------------------
     def _launch(self, job: Job, step: Any) -> None:
+        if isinstance(step, Pause):
+            job.algorithm, job.progress, job.handle = step.label, step.progress, None
+            self.executor.pause(lambda: self._advance(job, None, None))
+            return
         if not isinstance(step, AlgCall):
             self._advance(job, None, TypeError(f"Étape inattendue : {step!r}"))
             return
         job.step += 1
-        job.algorithm = step.algorithm_id
+        job.algorithm, job.progress = step.algorithm_id, None
         try:
             job.handle = self.executor.start(step, lambda v, e: self._advance(job, v, e))
         except Exception as exc:  # algorithme introuvable, paramètres refusés…

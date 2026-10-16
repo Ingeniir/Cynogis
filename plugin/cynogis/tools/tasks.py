@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,6 +77,9 @@ class ProcessingExecutor:
 
     def progress(self, handle: _Handle | None) -> float:
         return float(handle.feedback.progress()) if handle is not None else 0.0
+
+    def pause(self, resume: Callable[[], None]) -> None:
+        QTimer.singleShot(0, resume)  # après l'affichage et les requêtes en attente
 
     def cancel(self, handle: _Handle | None) -> None:
         if handle is not None and not handle.cancelled:

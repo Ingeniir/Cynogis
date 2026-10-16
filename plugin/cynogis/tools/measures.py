@@ -10,6 +10,7 @@ from qgis.core import QgsExpression, QgsFeature, QgsFeatureRequest, QgsGeometry
 from ..core import landscape as nomenclature
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import Pacer, Steps
 from ..core.metrics import elongation, shape_index
 from ..core.registry import Level, tool
 from ..core.schema import Param
@@ -212,7 +213,7 @@ def _r4(value: float | None) -> float | None:
 })
 def shape_indices(layer_id: str, indices: list[str], reference_layer_id: str | None,
                   id_field: str | None, filter_expression: str | None, limit: int,
-                  offset: int) -> ToolResult:
+                  offset: int) -> Steps:
     """Indices de forme de polygones : compacité de Gravelius et allongement par entité (avec
     surface et périmètre ellipsoïdaux), statistiques globales de chaque indice, CV des surfaces,
     taux de couverture et densité par rapport à une couche de référence. Ex. : repérer les
@@ -234,7 +235,9 @@ def shape_indices(layer_id: str, indices: list[str], reference_layer_id: str | N
     rows: list[dict[str, Any]] = []
     geoms: list[QgsGeometry] = []
     request = feature_request(layer, filter_expression, [id_name] if id_name else [])
-    for feature, geom in iter_geometries(layer, request):
+    pace = Pacer("indices de forme", layer.featureCount())
+    for done, (feature, geom) in enumerate(iter_geometries(layer, request)):
+        yield from pace(done)
         area, perimeter = area_m2(da, geom), perimeter_m(da, geom)
         row: dict[str, Any] = {"fid": feature.id()}
         if id_name:
@@ -307,7 +310,7 @@ HABITAT_HEADERS = ["Habitat", "Libellé", "Nb de polygones", "Surface (ha)",
 })
 def habitat_area_stats(layer_id: str, class_field: str, study_area_layer_id: str | None,
                        export_format: str, separator: str,
-                       output_name: str | None) -> ToolResult:
+                       output_name: str | None) -> Steps:
     """Tableau des habitats de l'aire d'étude : nombre de polygones, surface (ha), part de
     l'aire d'étude et de la surface cartographiée (%), surface moyenne, périmètre cumulé
     (limites de l'aire d'étude comprises). Surfaces ellipsoïdales. Libellé ajouté si les
@@ -332,7 +335,10 @@ def habitat_area_stats(layer_id: str, class_field: str, study_area_layer_id: str
 
     groups: dict[Any, list[float]] = defaultdict(lambda: [0, 0.0, 0.0])
     pieces = []
-    for feature, geometry in iter_geometries(layer, feature_request(layer, None, [class_field])):
+    pace = Pacer("surfaces par habitat", layer.featureCount())
+    for done, (feature, geometry) in enumerate(
+            iter_geometries(layer, feature_request(layer, None, [class_field]))):
+        yield from pace(done)
         if aoi is not None:
             if not engine.intersects(geometry.constGet()):
                 continue

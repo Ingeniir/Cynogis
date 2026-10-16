@@ -88,10 +88,14 @@ class CynogisPlugin:
         self.iface.addPluginToMenu(MENU, self._action)
 
         self._load_palettes()
-        QgsProject.instance().aboutToBeCleared.connect(self._cancel_jobs)
+        project = QgsProject.instance()
+        project.aboutToBeCleared.connect(self._cancel_jobs)
+        project.layersWillBeRemoved.connect(self._cancel_jobs)
 
     def unload(self) -> None:
-        QgsProject.instance().aboutToBeCleared.disconnect(self._cancel_jobs)
+        project = QgsProject.instance()
+        project.aboutToBeCleared.disconnect(self._cancel_jobs)
+        project.layersWillBeRemoved.disconnect(self._cancel_jobs)
         self._cancel_jobs()
         self._stop_bridge()
         if self._action is not None:
@@ -136,11 +140,12 @@ class CynogisPlugin:
             self._token = None
         self._notify("Serveur arrêté", Qgis.MessageLevel.Info)
 
-    def _cancel_jobs(self) -> None:
-        """Projet fermé ou plugin déchargé : un traitement en cours n'a plus de sens."""
+    def _cancel_jobs(self, *_args) -> None:
+        """Projet fermé, couche supprimée ou plugin déchargé : un traitement en cours
+        pourrait reprendre sur une couche détruite (plantage) ; il est annulé."""
         if self._dispatcher.jobs is not None:
-            self._dispatcher.jobs.cancel_all("Projet fermé ou plugin déchargé : traitement "
-                                             "annulé.")
+            self._dispatcher.jobs.cancel_all("Projet fermé, couche supprimée ou plugin "
+                                             "déchargé pendant le traitement : annulé.")
 
     def _set_checked(self, value: bool) -> None:
         if self._action is not None:
