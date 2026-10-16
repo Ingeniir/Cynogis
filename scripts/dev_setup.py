@@ -27,7 +27,8 @@ def ensure_venv() -> None:
 
 def load_env() -> dict:
     if not ENV_FILE.exists():
-        sys.exit("✗ .qgis_env.json introuvable : exécute d'abord scripts/qgis_env_snippet.py dans QGIS.")
+        sys.exit("✗ .qgis_env.json introuvable : exécute d'abord "
+                 "scripts/qgis_env_snippet.py dans QGIS.")
     return json.loads(ENV_FILE.read_text(encoding="utf-8"))
 
 
@@ -110,7 +111,8 @@ def print_client_config() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--no-link", action="store_true", help="ne pas lier le plugin au profil QGIS")
+    parser.add_argument("--no-link", action="store_true",
+                        help="ne pas lier le plugin au profil QGIS")
     parser.add_argument("--no-stubs", action="store_true", help="ne pas installer de stubs")
     args = parser.parse_args()
 
@@ -123,7 +125,8 @@ def main() -> None:
     if not args.no_link:
         link_plugin(env)
     print_client_config()
-    print("\n→ Dans PyCharm : recharge les chemins de l'interpréteur (voir README) puis attends l'indexation.")
+    print("\n→ Dans PyCharm : recharge les chemins de l'interpréteur (voir README) "
+          "puis attends l'indexation.")
 
 
 if __name__ == "__main__":

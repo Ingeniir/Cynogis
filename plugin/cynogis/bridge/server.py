@@ -1,4 +1,5 @@
-"""Serveur TCP local (127.0.0.1). Les signaux Qt sont traités dans la boucle d'événements de QGIS : chaque requête s'exécute sur le THREAD PRINCIPAL."""
+"""Serveur TCP local (127.0.0.1). Les signaux Qt sont traités dans la boucle d'événements de
+QGIS : chaque requête s'exécute sur le THREAD PRINCIPAL."""
 from __future__ import annotations
 
 import hmac
@@ -77,7 +78,8 @@ class BridgeServer(QObject):
             return Response.failure(None, err)
         if not hmac.compare_digest(request.token.encode(), self._token):
             logger.warning("Requête refusée : jeton invalide")
-            return Response.failure(request.id, ToolError(ErrorCode.UNAUTHORIZED, "Jeton invalide."))
+            return Response.failure(request.id,
+                                    ToolError(ErrorCode.UNAUTHORIZED, "Jeton invalide."))
         logger.debug("→ %s", request.method)
         return self._dispatcher.dispatch(request)
 

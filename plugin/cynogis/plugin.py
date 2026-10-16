@@ -69,7 +69,8 @@ class CynogisPlugin:
             registry.register_module(module)
         self._dispatcher = Dispatcher(
             registry,
-            policy=PermissionPolicy(max_level=Level.DESTROY, confirm=make_confirmer(iface.mainWindow())),
+            policy=PermissionPolicy(max_level=Level.DESTROY,
+                                    confirm=make_confirmer(iface.mainWindow())),
             audit=AuditLog(DATA_DIR / "audit"),
         )
         logger.info("Outils chargés : %s", ", ".join(registry.names))

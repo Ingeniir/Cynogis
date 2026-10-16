@@ -66,7 +66,8 @@ async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.T
     try:
         result = await _client.call(name, arguments or {})
     except BridgeError as exc:
-        details = f"\nDétails : {json.dumps(exc.details, ensure_ascii=False)}" if exc.details else ""
+        details = (f"\nDétails : {json.dumps(exc.details, ensure_ascii=False)}"
+                   if exc.details else "")
         raise RuntimeError(f"{exc}{details}") from exc  # → isError=true, lisible par l'IA
     payload = {"data": result.data, "warnings": result.warnings, "audit_id": result.audit_id}
     return [types.TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, indent=1))]
