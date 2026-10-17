@@ -18,6 +18,7 @@ from qgis.core import (
 from ..core import landscape as nomenclature
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
+from ..core.jobs import Pacer
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.territory import detect_territory
@@ -166,7 +167,9 @@ def classify_landscape(layer_id: str, source_field: str, mapping: dict,
     summary: dict[str, dict[str, Any]] = {}
     unmatched: dict[str, int] = {}
     small = 0
-    for feature in working.getFeatures():
+    pace = Pacer("classement des paysages", working.featureCount())
+    for i, feature in enumerate(working.getFeatures()):
+        yield from pace(i)
         geometry = feature.geometry()
         if geometry.isNull() or geometry.isEmpty():
             continue

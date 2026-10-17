@@ -739,7 +739,13 @@ def request_commit(layer_id: str | None, keep_editing: bool) -> ToolResult:
 # --- Détail de la fenêtre de confirmation (niveau DESTROY) --------------------------------
 def _commit_details(params: dict) -> list[str]:
     lid = get_vector_layer(params["layer_id"]).id() if params.get("layer_id") else None
-    return describe_summary(JOURNAL.summary(lid))
+    summary = JOURNAL.summary(lid)
+    # commitChanges enregistre tout le tampon, y compris ce que l'opérateur a saisi à la main.
+    tracked = {bucket["layer_id"] for bucket in summary["layers"]}
+    untracked = [f"⚠ {layer.name()} : modifications faites hors Cynogis, enregistrées aussi."
+                 for layer in _targets(lid)
+                 if layer.isModified() and layer.id() not in tracked]
+    return [*untracked, *describe_summary(summary)]
 
 
 def _delete_features_details(params: dict) -> list[str]:

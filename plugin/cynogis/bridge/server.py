@@ -68,6 +68,7 @@ class BridgeServer(QObject):
         if len(buf) > MAX_MESSAGE_BYTES:
             err = ToolError(ErrorCode.PROTOCOL_ERROR, "Message trop volumineux.")
             self._send(sock, Response.failure(None, err))
+            self._buffers.pop(sock, None)  # lectures suivantes ignorées jusqu'à la déconnexion
             sock.disconnectFromHost()
 
     # --- Traitement ----------------------------------------------------------------------

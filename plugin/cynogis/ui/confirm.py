@@ -5,6 +5,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from qgis.PyQt.QtCore import QTimer
 from qgis.PyQt.QtWidgets import QMessageBox, QWidget
 
 from ..core.policy import Confirmer
@@ -12,6 +13,9 @@ from ..core.registry import ToolSpec
 
 DETAIL_PROVIDERS: dict[str, Callable[[dict], list]] = {}
 VISIBLE_DETAIL_LINES = 12
+# Sans réponse, refus : doit rester sous le délai du client MCP (120 s), sinon l'action
+# validée tardivement s'exécuterait alors que l'IA a reçu TIMEOUT (et pourrait réessayer).
+CONFIRM_TIMEOUT_S = 90
 
 
 def make_confirmer(parent: QWidget) -> Confirmer:
@@ -24,11 +28,15 @@ def make_confirmer(parent: QWidget) -> Confirmer:
         box.setText(f"L'IA demande une action irréversible : <b>{spec.name}</b>")
         # Les premières lignes d'impact sont visibles sans ouvrir le détail.
         summary = "\n".join(details[:VISIBLE_DETAIL_LINES])
-        box.setInformativeText(f"{summary}\n\nAutoriser cette action ?" if summary
-                               else "Autoriser cette action ?")
+        question = f"Autoriser cette action ? (sans réponse en {CONFIRM_TIMEOUT_S} s : refus)"
+        box.setInformativeText(f"{summary}\n\n{question}" if summary else question)
         box.setDetailedText("\n".join([*details, "", "Paramètres :", raw]) if details else raw)
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         box.setDefaultButton(QMessageBox.StandardButton.No)
+        timer = QTimer(box)
+        timer.setSingleShot(True)
+        timer.timeout.connect(box.reject)  # aucun bouton cliqué → refus
+        timer.start(CONFIRM_TIMEOUT_S * 1000)
         box.exec()
         return box.clickedButton() == box.button(QMessageBox.StandardButton.Yes)
 

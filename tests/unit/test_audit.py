@@ -17,3 +17,10 @@ def test_long_params_truncated(tmp_path):
     audit = AuditLog(None)
     audit.record(tool="a", level=0, params={"wkt": "x" * 10_000}, ok=True, duration_ms=1)
     assert len(audit.recent(1)[0]["params"]["_truncated"]) == MAX_PARAMS_CHARS
+
+
+def test_destroy_params_never_truncated(tmp_path):
+    audit = AuditLog(None)
+    code = "x = 1\n" * 1000
+    audit.record(tool="execute_pyqgis", level=3, params={"code": code}, ok=True, duration_ms=1)
+    assert audit.recent(1)[0]["params"] == {"code": code}
