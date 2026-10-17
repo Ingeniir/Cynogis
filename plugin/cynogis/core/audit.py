@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .registry import Level
+
 logger = logging.getLogger("cynogis.audit")
 MAX_PARAMS_CHARS = 2000
 
@@ -37,7 +39,8 @@ class AuditLog:
             "ok": ok,
             "error_code": error_code,
             "duration_ms": round(duration_ms, 1),
-            "params": _truncate(params),
+            # Action irréversible (code PyQGIS…) : trace complète.
+            "params": params if level >= Level.DESTROY else _truncate(params),
             "outputs": outputs or [],
         }
         self._recent.append(entry)

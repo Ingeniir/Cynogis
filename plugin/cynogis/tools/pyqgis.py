@@ -11,6 +11,7 @@ import processing
 import qgis.core
 from qgis.PyQt import QtCore, QtGui, QtWidgets
 
+from ..core.codecheck import risky_names
 from ..core.errors import ErrorCode, ToolError
 from ..core.registry import Level, tool
 from ..core.schema import Param
@@ -64,7 +65,10 @@ def execute_pyqgis(code: str, steps: list[str], justification: str) -> dict:
 
 def _details(params: dict) -> list[str]:
     steps = [str(s) for s in params.get("steps") or []]
-    return [*(f"{i}. {s}" for i, s in enumerate(steps, 1)),
+    # En tête (partie visible) : les étapes sont écrites par l'IA, le code fait foi.
+    risky = risky_names(str(params.get("code", "")))
+    alert = [f"⚠ Appels sensibles dans le code : {', '.join(risky)}", ""] if risky else []
+    return [*alert, *(f"{i}. {s}" for i, s in enumerate(steps, 1)),
             "", f"Justification : {params.get('justification', '')}",
             "", "Code :", *str(params.get("code", "")).splitlines()]
 

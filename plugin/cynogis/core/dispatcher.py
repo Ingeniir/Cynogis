@@ -94,6 +94,7 @@ class Dispatcher:
             self._check_busy(spec)
             params = validate_params(spec.params, request.params)
             self.policy.check(spec, params)
+            self._check_busy(spec)  # un job a pu démarrer pendant la fenêtre de confirmation
             result = spec.handler(**params)
             if inspect.isgenerator(result):
                 return self._start_job(spec, request, result, finish)

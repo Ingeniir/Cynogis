@@ -248,7 +248,9 @@ def clip_reference_landcover(layer_id: str, source: str, feature_ids: list | Non
                                                      singles.wkbType(), crs)
     summary: dict[str, dict[str, Any]] = {}
     features = []
-    for feature in singles.getFeatures():
+    pace = Pacer("surfaces des paysages", singles.featureCount())
+    for i, feature in enumerate(singles.getFeatures()):
+        yield from pace(i)
         item = nomenclature.BY_CODE[feature["pays_code"]]
         surface = area_m2(da, feature.geometry())
         new = QgsFeature(out_fields)

@@ -79,7 +79,10 @@ class QgisBridgeClient:
 
         if not line:
             raise BridgeError("QGIS_UNAVAILABLE", "Connexion fermée par QGIS sans réponse.")
-        response = json.loads(line)
+        try:
+            response = json.loads(line)
+        except ValueError as exc:
+            raise BridgeError("PROTOCOL_ERROR", f"Réponse de QGIS illisible : {exc}") from exc
         if not response.get("ok"):
             err = response.get("error") or {}
             raise BridgeError(err.get("code", "UNKNOWN"), err.get("message", "Erreur inconnue"),

@@ -8,6 +8,7 @@ from cynogis.core.audit import AuditLog
 from cynogis.core.dispatcher import Dispatcher, ToolResult
 from cynogis.core.errors import ErrorCode, ToolError
 from cynogis.core.jobs import AlgCall, Fetch, Pacer, Pause, run_now
+from cynogis.core.policy import PermissionPolicy
 from cynogis.core.registry import Level, ToolRegistry, tool
 from cynogis.core.schema import Param
 
@@ -299,3 +300,52 @@ def test_wait_job_delai_depasse(app, monkeypatch):
     with pytest.raises(BridgeError) as err:
         asyncio.run(app._wait_job(BridgeResult({}, job_id="j1")))
     assert err.value.code == "TIMEOUT" and client.calls == ["cancel_job"]
+
+
+@tool(level=Level.DESTROY)
+def effacer():
+    """Action irréversible."""
+    return "fait"
+
+
+def test_job_lance_pendant_la_confirmation(tmp_path):
+    """La fenêtre de confirmation laisse tourner la boucle d'événements : un job peut démarrer
+    avant le clic, l'action irréversible doit alors être refusée."""
+    registry = ToolRegistry()
+    registry.register(calcul, effacer)
+
+    def confirm(spec, params):
+        return d.dispatch(_req("calcul", n=1)).job_id is not None
+
+    d = Dispatcher(registry, PermissionPolicy(confirm=confirm), executor=FakeExecutor())
+    assert d.dispatch(_req("effacer")).error["code"] == "BUSY"
+
+
+# --- Client du pont ------------------------------------------------------------------------
+def test_constantes_du_protocole_identiques():
+    from cynogis.bridge import protocol
+    from cynogis_server import client
+    assert client.PROTOCOL_VERSION == protocol.PROTOCOL_VERSION
+    assert client.MAX_MESSAGE_BYTES == protocol.MAX_MESSAGE_BYTES
+
+
+def test_client_reponse_illisible(tmp_path):
+    from cynogis_server.client import BridgeError, QgisBridgeClient
+
+    async def scenario():
+        async def handle(reader, writer):
+            await reader.readline()
+            writer.write(b"pas du json\n")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        conn = tmp_path / "connection.json"
+        conn.write_text(json.dumps({"host": "127.0.0.1", "port": port, "token": "t"}))
+        async with server:
+            with pytest.raises(BridgeError) as err:
+                await QgisBridgeClient(conn).call("ping")
+        return err.value.code
+
+    assert asyncio.run(scenario()) == "PROTOCOL_ERROR"
