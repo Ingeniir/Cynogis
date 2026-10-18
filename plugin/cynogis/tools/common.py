@@ -254,7 +254,10 @@ def iter_geometries(layer: QgsVectorLayer, request: QgsFeatureRequest,
 # --- Mesures ---------------------------------------------------------------
 def distance_area(crs: QgsCoordinateReferenceSystem,
                   method: str = "ellipsoidal") -> QgsDistanceArea:
-    """ellipsoidal : mesure sur l'ellipsoïde (GRS80 par défaut, celui du RGR92 et du RGM04).
+    """ellipsoidal : mesure sur l'ellipsoïde du SCR de la couche (GRS80 / EPSG:7019 pour le
+    RGR92 et le RGM04), à défaut celui du projet, à défaut GRS80. C'est la référence : en UTM,
+    la surface planaire est sous-estimée d'environ 0,08 % à Mayotte (proche du méridien
+    central) et de 0 à 0,045 % à La Réunion.
     planar : mesure dans le SCR de la couche (qui doit être projeté)."""
     if not crs.isValid():
         raise ToolError(ErrorCode.INVALID_PARAMS,
@@ -263,8 +266,8 @@ def distance_area(crs: QgsCoordinateReferenceSystem,
     da = QgsDistanceArea()
     da.setSourceCrs(crs, project.transformContext())
     if method == "ellipsoidal":
-        ellipsoid = project.ellipsoid()
-        da.setEllipsoid(ellipsoid if ellipsoid and ellipsoid != "NONE" else "GRS80")
+        candidates = (crs.ellipsoidAcronym(), project.ellipsoid())
+        da.setEllipsoid(next((e for e in candidates if e and e != "NONE"), "GRS80"))
     else:
         if crs.isGeographic():
             raise ToolError(ErrorCode.CRS_GEOGRAPHIC,
@@ -275,6 +278,8 @@ def distance_area(crs: QgsCoordinateReferenceSystem,
 
 
 def area_m2(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
+    if not geometry.isGeosValid():  # polygone auto-intersecté : surfaces qui s'annulent
+        geometry = geometry.makeValid()
     return da.convertAreaMeasurement(da.measureArea(geometry), Qgis.AreaUnit.SquareMeters)
 
 
