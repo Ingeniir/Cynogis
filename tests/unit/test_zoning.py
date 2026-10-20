@@ -37,3 +37,38 @@ def test_url_getfeature():
     assert query["TYPENAMES"] == "patrinat_rnn:rnn" and query["COUNT"] == "100"
     assert query["BBOX"] == "-21.02,55.26,-20.98,55.3,urn:ogc:def:crs:EPSG::4326"
     assert "&SERVICE=" in getfeature_url("https://x/wfs?map=a", "t", (0, 0, 1, 1), 1)
+
+
+def test_categories_et_implications():
+    from cynogis.core.zoning import CATEGORIES
+    assert all(z.category in CATEGORIES and z.implication for z in ZONINGS)
+
+
+def test_pre_diagnostic():
+    from cynogis.core.report import build_markdown
+    from cynogis.core.zoning import assess, prescan_sections
+    items = [BY_KEY[k] for k in ("rnn", "znieff1", "ebc", "ens")]
+    rows = [["ZNIEFF de type I", "Zone A", "intersecte", 1.2, 10.0, 0.5, 0.0, None],
+            ["Réserve naturelle nationale", "Étang", "à 350 m", None, None, None, 350.0, None],
+            ["Espace boisé classé (PLU)", None, "absent (rayon 2000 m)", None, None, None,
+             None, None],
+            ["Espace naturel sensible (ENS)", None, "non vérifié : couche locale à fournir",
+             None, None, None, None, None]]
+    summary = assess(items, rows)
+    assert summary["level"] == "fort" and summary["strong_hits"] == []
+    assert summary["states"] == {"rnn": "proche", "znieff1": "intersecte", "ebc": "absent",
+                                 "ens": "non vérifié"}
+    assert summary["unchecked"] == ["Espace naturel sensible (ENS)"]
+    # Une protection forte intersectée : niveau majeur ; rien à proximité : faible.
+    assert assess(items, [[*rows[1][:2], "intersecte"]])["level"] == "majeur"
+    assert assess(items, rows[2:])["level"] == "faible"
+
+    sections = prescan_sections(items, rows, ["Zonage", "Zone", "Statut", "a", "b", "c", "d",
+                                              "e"], summary, "2026-10-20", set())
+    examined = sections[1]["table"]["rows"]
+    assert [r[1] for r in examined][:2] == ["ZNIEFF de type I", "Réserve naturelle nationale"]
+    sources = {r[0]: r[2] for r in sections[3]["table"]["rows"]}
+    assert sources["ZNIEFF de type I"] == "2026-10-20"
+    assert sources["Espace naturel sensible (ENS)"] == ""
+    note = build_markdown("Pré-diagnostic", sections)
+    assert "## Sources et dates" in note and "**Fort**" in note

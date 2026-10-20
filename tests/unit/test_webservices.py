@@ -107,3 +107,8 @@ def test_urls_and_wfs_params_cap_max_features():
     params = wfs_params(service, "a:b", "EPSG:2975", 10_000)
     assert params["maxNumFeatures"] == "100" and params["srsname"] == "EPSG:2975"
     assert "authcfg" not in params
+
+
+def test_lizmap_service_url_keeps_its_query():
+    url = capabilities_url(BUILTIN["deal_reunion"])
+    assert "?repository=00cartogenerale&project=deal_reunion&SERVICE=WFS" in url
