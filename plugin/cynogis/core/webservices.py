@@ -71,6 +71,20 @@ BUILTIN = {s.id: s for s in (
                "plans, altitude…)", "https://data.geopf.fr/wms-r/wms", builtin=True),
     WebService("geopf_wfs", "wfs", "Géoplateforme IGN - WFS (BD TOPO, cadastre, limites "
                "administratives, zonages…)", "https://data.geopf.fr/wfs/ows", builtin=True),
+    WebService("geopf_gpu", "wfs", "Géoportail de l'urbanisme - zonages et prescriptions "
+               "surfaciques des PLU (dont EBC)", "https://data.geopf.fr/wfs/ows",
+               layers=("wfs_du:zone_urba", "wfs_du:prescription_surf"), builtin=True),
+    WebService("inpn_reunion", "wfs", "INPN (MNHN) - espaces protégés et inventaires, "
+               "La Réunion", "http://ws.carmencarto.fr/WFS/119/reu_inpn", crs="EPSG:2975",
+               builtin=True),
+    WebService("inpn_mayotte", "wfs", "INPN (MNHN) - espaces protégés et inventaires, "
+               "Mayotte", "http://ws.carmencarto.fr/WFS/119/myt_inpn", crs="EPSG:4471",
+               builtin=True),
+    WebService("deal_reunion", "wfs", "DEAL Réunion (Lizmap) - cartographie générale : "
+               "espaces naturels, zones humides, continuités écologiques, eau, littoral…",
+               "https://deal974.lizmap.com/cartes/index.php/lizmap/service/"
+               "?repository=00cartogenerale&project=deal_reunion", crs="EPSG:2975",
+               builtin=True),
 )}
 
 

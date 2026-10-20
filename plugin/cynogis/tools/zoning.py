@@ -1,6 +1,7 @@
 """Croisement d'un projet avec les zonages réglementaires et d'inventaire (Réunion, Mayotte)."""
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from qgis.core import (
@@ -25,6 +26,7 @@ from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
 from ..core.jobs import Fetch, Pacer, Steps
 from ..core.registry import Level, tool
+from ..core.report import build_html, build_markdown
 from ..core.schema import Param
 from ..core.territory import TERRITORIES, detect_territory
 from .common import (
@@ -44,7 +46,7 @@ from .common import (
     require_field,
     to_json_value,
 )
-from .export import TABLE_FORMATS, write_table
+from .export import REPORT_FORMATS, TABLE_FORMATS, _output_path, write_document, write_table
 from .outputs import save_to_project
 from .webservices import _service
 
@@ -52,6 +54,11 @@ SERVICE = "geopf_wfs"
 WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 HEADERS = ["Zonage", "Zone", "Statut", "Surface intersectée (ha)", "Part du projet (%)",
            "Part de la zone (%)", "Distance (m)", "Fiche"]
+LOCAL_LAYERS = Param("array", 'Couches locales, prioritaires sur le flux national : '
+                     '[{"zoning": "ens", "layer_id": "...", "name_field": "nom", '
+                     '"filter": "\\"type\\" = \'ENS\'"}]. Seule source pour ens, '
+                     "sar_smvm, loi_littoral et zones_humides.", required=False,
+                     items="object")
 
 
 def _wfs_features(typename: str, expression: str | None, search: QgsRectangle, crs,
@@ -113,11 +120,7 @@ def _sources(item: zoning.Zoning, local: dict[str, list[dict]], search: QgsRecta
                      "apb, cdl, ramsar, znieff1, znieff2, znieff1_mer, znieff2_mer, "
                      "foret_publique, ebc, ens, sar_smvm, loi_littoral, zones_humides. "
                      "Défaut : tous ceux du territoire.", required=False, items="string"),
-    "local_layers": Param("array", 'Couches locales, prioritaires sur le flux national : '
-                          '[{"zoning": "ens", "layer_id": "...", "name_field": "nom", '
-                          '"filter": "\\"type\\" = \'ENS\'"}]. Seule source pour ens, '
-                          "sar_smvm, loi_littoral et zones_humides.", required=False,
-                          items="object"),
+    "local_layers": LOCAL_LAYERS,
     "search_distance_m": Param("number", "Zones non intersectées listées si elles sont à "
                                "moins de cette distance (m).", required=False, default=1000,
                                minimum=0, maximum=50000),
@@ -266,6 +269,55 @@ def regulatory_zoning_intersect(layer_id: str, zonings: list | None,
         result.data["intersection_layer"] = saved.data["outputs"][0]
         result.outputs.extend(saved.outputs)
         result.warnings.extend(notes + [w for w in saved.warnings if w not in result.warnings])
+    return result
+
+
+@tool(level=Level.CREATE, params={
+    "layer_id": Param("string", "Emprise du projet (layer_id) : polygones en SCR projeté, "
+                      "toutes les entités sont fusionnées."),
+    "local_layers": LOCAL_LAYERS,
+    "search_distance_m": Param("number", "Rayon de recherche autour de l'emprise (m).",
+                               required=False, default=2000, minimum=0, maximum=50000),
+    "note_format": Param("string", "Format de la note.", required=False, default="markdown",
+                         enum=tuple(REPORT_FORMATS)),
+    "output_name": Param("string", "Nom des fichiers produits.", required=False),
+})
+def regulatory_prescan(layer_id: str, local_layers: list | None, search_distance_m: float,
+                       note_format: str, output_name: str | None) -> Steps:
+    """Pré-diagnostic réglementaire d'une emprise à La Réunion ou à Mayotte, en un appel :
+    croise tous les zonages du territoire (comme regulatory_zoning_intersect), puis qualifie
+    chacun (intersecte, proche, absent, non vérifié) avec sa catégorie juridique et son
+    implication probable, et donne un niveau de contrainte indicatif (faible, modéré, fort,
+    majeur). Produit la couche des intersections, le tableau XLSX et une note (Markdown par
+    défaut) avec la source et la date de chaque zonage. Cadrage préalable d'une étude
+    d'impact ou d'une dérogation : implications indicatives, à confirmer."""
+    result = yield from regulatory_zoning_intersect(
+        layer_id, None, local_layers, search_distance_m, True, "xlsx", 2000, output_name)
+    data = result.data
+    local_keys = {str(entry["zoning"]) for entry in local_layers or []}
+    items = zoning.for_territory(data["territory"])
+    items += [zoning.Zoning(k, k, None) for k in local_keys if k not in zoning.BY_KEY]
+    summary = zoning.assess(items, data["rows"])
+    sections = zoning.prescan_sections(items, data["rows"], data["headers"], summary,
+                                       date.today().isoformat(), local_keys)
+    layer_name = get_vector_layer(layer_id).name()
+    territory = TERRITORIES.get(data["territory"] or "")
+    metadata = {"Emprise": layer_name,
+                "Territoire": territory.name if territory else "non reconnu",
+                "Surface du projet (ha)": data["project_area_ha"],
+                "Rayon de recherche (m)": search_distance_m}
+    builder = build_markdown if note_format == "markdown" else build_html
+    content = builder("Pré-diagnostic réglementaire", sections, metadata)
+    path, more = _output_path(output_name or f"prediagnostic_{layer_name}",
+                              REPORT_FORMATS[note_format])
+    write_document(content, path)
+    data["summary"] = summary
+    data["note_path"] = str(path)
+    result.outputs.append(str(path))
+    result.warnings.extend(w for w in more if w not in result.warnings)
+    if territory is None:
+        result.warnings.append("Emprise hors Réunion / Mayotte : tous les zonages du "
+                               "catalogue ont été examinés.")
     return result
 
 

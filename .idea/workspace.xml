@@ -4,7 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="779a0765-2b87-4638-9997-bd8e8a9936c3" name="Changes" comment="" />
+    <list default="true" id="779a0765-2b87-4638-9997-bd8e8a9936c3" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/plugin/cynogis/core/webservices.py" beforeDir="false" afterPath="$PROJECT_DIR$/plugin/cynogis/core/webservices.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/unit/test_webservices.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/unit/test_webservices.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -53,7 +57,7 @@
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
     "python.packages.toolwindow.project.migrated.to.right.top.v2": "true",
-    "settings.editor.selected.configurable": "preferences.keymap"
+    "settings.editor.selected.configurable": "com.intellij.minimap"
   }
 }]]></component>
   <component name="RecentsManager">
@@ -78,6 +82,7 @@
       <workItem from="1791551714164" duration="14792000" />
       <workItem from="1791631678764" duration="1281000" />
       <workItem from="1791654362102" duration="28643000" />
+      <workItem from="1792416701364" duration="5298000" />
     </task>
     <servers />
   </component>
