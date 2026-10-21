@@ -72,6 +72,9 @@ Client MCP (Claude, MCP Inspector) ──stdio──> server/   cynogis_server (
 
 ## Installation
 
+> Poste utilisateur (sans dépôt git) : voir [INSTALLATION.md](INSTALLATION.md).
+> Ci-dessous : installation de développement.
+
 ### 1. Serveur MCP
 
 ```bash
