@@ -7,7 +7,7 @@ from cynogis.bridge.protocol import PROTOCOL_VERSION, Response, decode_request
 from cynogis.core.audit import AuditLog
 from cynogis.core.dispatcher import Dispatcher, ToolResult
 from cynogis.core.errors import ErrorCode, ToolError
-from cynogis.core.jobs import AlgCall, Fetch, Pacer, Pause, run_now
+from cynogis.core.jobs import AlgCall, Fetch, Pacer, Pause, note, run_now
 from cynogis.core.policy import PermissionPolicy
 from cynogis.core.registry import Level, ToolRegistry, tool
 from cynogis.core.schema import Param
@@ -213,6 +213,40 @@ def test_echec_reseau(tmp_path):
     job_id = d.dispatch(_req("telechargement")).job_id
     ex.finish(error=ToolError(ErrorCode.NETWORK_ERROR, "Service injoignable"))
     assert d.dispatch(_req("get_job_status", job_id=job_id)).error["code"] == "NETWORK_ERROR"
+
+
+@tool(level=Level.READ)
+def mesure_invalide():
+    """Helper qui note deux géométries réparées."""
+    note("{n} géométrie(s) réparée(s)")
+    note("{n} géométrie(s) réparée(s)")
+    return ToolResult({"ok": True}, ["attention"])
+
+
+@tool(level=Level.CREATE)
+def job_invalide():
+    """Notes avant et après une étape Processing."""
+    note("{n} réparée(s)")
+    yield AlgCall("native:a", {})
+    note("{n} réparée(s)")
+    return {"fait": True}
+
+
+def test_notes_ajoutees_aux_warnings(tmp_path):
+    registry = ToolRegistry()
+    registry.register(mesure_invalide, job_invalide)
+    ex = FakeExecutor()
+    d = Dispatcher(registry, executor=ex)
+    resp = d.dispatch(_req("mesure_invalide"))
+    assert resp.warnings == ["attention", "2 géométrie(s) réparée(s)"]
+
+    job_id = d.dispatch(_req("job_invalide")).job_id
+    # lecture pendant le job : ses notes ne se mélangent pas à celles du job
+    assert d.dispatch(_req("mesure_invalide")).warnings[-1] == "2 géométrie(s) réparée(s)"
+    ex.finish({})
+    final = d.dispatch(_req("get_job_status", job_id=job_id))
+    assert final.ok and final.warnings == ["2 réparée(s)"]
+    note("{n} hors appel")  # hors outil : sans effet ni erreur
 
 
 def test_pacer_ne_cede_qu_apres_l_intervalle():

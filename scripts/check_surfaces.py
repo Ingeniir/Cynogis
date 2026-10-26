@@ -1,4 +1,4 @@
-"""Tests de référence des surfaces (feuille de route 1.1 et 1.2), sans QGIS lancé.
+"""Tests de référence des surfaces (feuille de route 1.1, 1.2, 1.3, 1.6), sans QGIS lancé.
 
 À exécuter avec le Python de QGIS (pytest n'y est pas installé) :
     "C:\\Program Files\\QGIS 4.2.1\\bin\\python-qgis.bat" scripts/check_surfaces.py
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugin"))
@@ -21,7 +22,13 @@ APP = QgsApplication([], False)
 APP.initQgis()
 
 from cynogis.core.errors import ErrorCode, ToolError  # noqa: E402
-from cynogis.tools.common import area_m2, area_method, distance_area  # noqa: E402
+from cynogis.core.jobs import collecting  # noqa: E402
+from cynogis.tools.common import (  # noqa: E402
+    INVALID_AREA_NOTE,
+    area_m2,
+    area_method,
+    distance_area,
+)
 
 PLANAR_TOL_M2 = 1e-6     # tolérance absolue, surface planaire
 ELLIPSOIDAL_TOL = 1e-5   # tolérance relative (0,001 %), surface ellipsoïdale
@@ -68,14 +75,19 @@ def check_site(authid: str, label: str, x: float, y: float, lat: float) -> None:
         area_method(planar)
     assert area_method(ellipsoidal).startswith("ellipsoïdale ("), area_method(ellipsoidal)
     k = utm_scale(x + 50, lat)
+    notes: Counter[str] = Counter()
     for name, (wkt, expected) in cases.items():
         geometry = QgsGeometry.fromWkt(wkt)
-        got = area_m2(planar, geometry)
+        with collecting(notes):
+            got = area_m2(planar, geometry)
         assert abs(got - expected) < PLANAR_TOL_M2, f"{label} {name} planaire : {got}"
-        got = area_m2(ellipsoidal, geometry)
+        with collecting(notes):
+            got = area_m2(ellipsoidal, geometry)
         reference = expected / (k * k)
         assert abs(got / reference - 1) < ELLIPSOIDAL_TOL, \
             f"{label} {name} ellipsoïdal : {got} au lieu de {reference}"
+    # Seul le papillon est invalide : signalé (feuille de route 1.6), une fois par méthode.
+    assert notes == Counter({INVALID_AREA_NOTE: 2}), notes
     print(f"✓ {label} ({authid}) : {len(cases)} cas, écart planaire/ellipsoïdal "
           f"{100 * (1 - k * k):+.4f} %, méthode « {area_method(ellipsoidal)} »")
 

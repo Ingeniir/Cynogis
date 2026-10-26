@@ -31,6 +31,7 @@ from qgis.PyQt.QtCore import QMetaType, Qt
 
 from ..core.errors import ErrorCode, ToolError
 from ..core.fields import resolve_type
+from ..core.jobs import note
 from ..core.territory import UNKNOWN, detect_territory
 
 WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -252,6 +253,11 @@ def iter_geometries(layer: QgsVectorLayer, request: QgsFeatureRequest,
 
 
 # --- Mesures ---------------------------------------------------------------
+INVALID_AREA_NOTE = ("{n} calcul(s) de surface sur une géométrie invalide (auto-intersection, "
+                     "anneau mal formé…), réparée à la volée par makeValid : résultat à "
+                     "vérifier, localiser les géométries avec check_geometries.")
+
+
 def distance_area(crs: QgsCoordinateReferenceSystem,
                   method: str = "ellipsoidal") -> QgsDistanceArea:
     """ellipsoidal : mesure sur l'ellipsoïde du SCR de la couche (GRS80 / EPSG:7019 pour le
@@ -287,6 +293,7 @@ def area_m2(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
                         "Reprojette d'abord la couche (reproject_layer) en EPSG:2975 "
                         "(La Réunion) ou EPSG:4471 (Mayotte).")
     if not geometry.isGeosValid():  # polygone auto-intersecté : surfaces qui s'annulent
+        note(INVALID_AREA_NOTE)
         geometry = geometry.makeValid()
     return da.convertAreaMeasurement(da.measureArea(geometry), Qgis.AreaUnit.SquareMeters)
 
