@@ -81,6 +81,7 @@ npx @modelcontextprotocol/inspector .venv/Scripts/python -m cynogis_server
 - Systèmes de coordonnées : La Réunion = EPSG:2975 (RGR92 / UTM 40S), Mayotte = EPSG:4471 (RGM04 / UTM 38S).
   Ne jamais calculer une surface en EPSG:4326.
 - Surfaces : toujours indiquer la méthode (plane ou ellipsoïdale, projetée ou 3D).
+- La surface 3D (`surface_3d`, MNT) ne remplace jamais la surface projetée dans un pré-diagnostic réglementaire : la projetée reste la référence (seuils IOTA, cas par cas, défrichement), la 3D est un complément ; toujours afficher les deux, étiquetées, avec la résolution du MNT.
 - Natura 2000 NE S'APPLIQUE PAS dans les départements d'outre-mer : ne jamais le proposer.
 - Les seuils réglementaires sont dans [fichier de config] : ne jamais les écrire en dur.
 - Pré-diagnostic : déterministe (intersections réelles), jamais rédigé par le LLM.

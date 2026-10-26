@@ -47,6 +47,12 @@ SLOPE_CLASSES: tuple[SlopeClass, ...] = (
                "Remparts et ravines : zone généralement inconstructible."),
 )
 
+# Surface réelle (3D) = surface projetée / cos(pente) : complément, jamais la référence
+# réglementaire (seuils IOTA, cas par cas, défrichement : surface projetée).
+MAX_SLOPE_DEG = 85.0     # plafond (falaises, remparts) : 1/cos(pente) tend vers l'infini à 90°
+MIN_COVERAGE_PCT = 95.0  # couverture du MNT sous laquelle la surface 3D n'est pas donnée
+MIN_PIXELS = 20          # en deçà, facteur 3D peu représentatif (polygone petit devant le pixel)
+
 # Orientations des versants, en degrés depuis le nord.
 ASPECT_SECTORS = (
     ("N", 337.5, 22.5), ("NE", 22.5, 67.5), ("E", 67.5, 112.5), ("SE", 112.5, 157.5),
