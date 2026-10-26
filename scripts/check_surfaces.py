@@ -1,4 +1,4 @@
-"""Tests de référence des surfaces (feuille de route 1.1, 1.2, 1.3, 1.6), sans QGIS lancé.
+"""Tests de référence des surfaces (feuille de route 1.1 à 1.3, 1.5, 1.6), sans QGIS lancé.
 
 À exécuter avec le Python de QGIS (pytest n'y est pas installé) :
     "C:\\Program Files\\QGIS 4.2.1\\bin\\python-qgis.bat" scripts/check_surfaces.py
@@ -27,7 +27,9 @@ from cynogis.tools.common import (  # noqa: E402
     INVALID_AREA_NOTE,
     area_m2,
     area_method,
+    dissolved_areas,
     distance_area,
+    overlap_warning,
 )
 
 PLANAR_TOL_M2 = 1e-6     # tolérance absolue, surface planaire
@@ -92,6 +94,24 @@ def check_site(authid: str, label: str, x: float, y: float, lat: float) -> None:
           f"{100 * (1 - k * k):+.4f} %, méthode « {area_method(ellipsoidal)} »")
 
 
+def check_dissolved() -> None:
+    """Feuille de route 1.5 : fusion par classe avant somme (chevauchement, trou, multi)."""
+    x, y = 338_000.0, 7_690_000.0
+    da = distance_area(QgsCoordinateReferenceSystem("EPSG:2975"), "planar")
+    items = [
+        ("a", f"POLYGON({square(x, y, 100)})"),
+        ("a", f"POLYGON({square(x + 50, y, 100)})"),  # recouvre le premier sur 50 m sur 100 m
+        ("b", f"POLYGON({square(x + 1000, y, 100)}, {square(x + 1040, y + 40, 20)})"),
+        ("b", f"MULTIPOLYGON(({square(x + 2000, y, 100)}), ({square(x + 2500, y, 50)}))"),
+    ]
+    areas, doubled = dissolved_areas(da, ((k, QgsGeometry.fromWkt(w)) for k, w in items))
+    assert abs(areas["a"] - 15_000) < PLANAR_TOL_M2, areas
+    assert abs(areas["b"] - 9_600 - 12_500) < PLANAR_TOL_M2, areas
+    assert doubled.keys() == {"a"} and abs(doubled["a"] - 5_000) < PLANAR_TOL_M2, doubled
+    assert "5000.00 m²" in overlap_warning(doubled)[0]
+    print("✓ Fusion par classe : chevauchement compté une fois, trou et multi-polygone respectés")
+
+
 def check_geographic_rejected() -> None:
     crs = QgsCoordinateReferenceSystem("EPSG:4326")
     geometry = QgsGeometry.fromWkt("POLYGON((55.4 -20.9, 55.5 -20.9, 55.5 -20.8, 55.4 -20.9))")
@@ -108,5 +128,6 @@ def check_geographic_rejected() -> None:
 if __name__ == "__main__":
     for site in SITES:
         check_site(*site)
+    check_dissolved()
     check_geographic_rejected()
     APP.exitQgis()

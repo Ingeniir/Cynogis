@@ -17,8 +17,10 @@ from ..core.schema import Param
 from ..core.stats import describe, describe_groups, to_float
 from ..core.units import AREA_UNITS, LENGTH_UNITS, convert_area, convert_length
 from .common import (
+    OVERLAP_TOL_M2,
     area_m2,
     area_method,
+    dissolved_areas,
     distance_area,
     feature_request,
     geometry_kind,
@@ -26,6 +28,7 @@ from .common import (
     group_key,
     iter_geometries,
     length_m,
+    overlap_warning,
     perimeter_m,
     prepare_expression,
     require_field,
@@ -59,7 +62,9 @@ def measure(layer_id: str, metrics: list[str], area_unit: str, length_unit: str,
             group_by: str | None, filter_expression: str | None, max_groups: int) -> ToolResult:
     """Mesure les surfaces, périmètres ou longueurs d'une couche. Renvoie le total et les
     statistiques de chaque mesure (moyenne, médiane, écart-type, quartiles, CV) et, avec
-    group_by, le total et la part (%) de chaque groupe. Ex. : surface de chaque type de paysage."""
+    group_by, le total et la part (%) de chaque groupe. Ex. : surface de chaque type de paysage.
+    Surfaces totales et par groupe fusionnées : un recouvrement n'est compté qu'une fois ;
+    les statistiques restent par entité."""
     layer = get_vector_layer(layer_id)
     metrics = list(dict.fromkeys(metrics))
     kind = geometry_kind(layer)
@@ -78,6 +83,7 @@ def measure(layer_id: str, metrics: list[str], area_unit: str, length_unit: str,
     }
     request = feature_request(layer, filter_expression, [group_field] if group_field else [])
     values: dict[str, dict[Any, list[float]]] = {m: defaultdict(list) for m in metrics}
+    shapes: list[tuple[Any, Any]] = []  # (groupe, géométrie) pour les surfaces fusionnées
     skipped = 0
     for feature in layer.getFeatures(request):
         geom = feature.geometry()
@@ -87,9 +93,21 @@ def measure(layer_id: str, metrics: list[str], area_unit: str, length_unit: str,
         key = group_key(feature[group_field]) if group_field else None
         for m in metrics:
             values[m][key].append(measurers[m](geom))
+        if "area" in metrics:
+            shapes.append((key, geom))
 
     all_values = {m: [v for vs in values[m].values() for v in vs] for m in metrics}
     totals = {m: math.fsum(all_values[m]) for m in metrics}
+    warnings: list[str] = []
+    group_m2: dict[Any, float] = {}
+    if "area" in metrics:  # totaux fusionnés : un recouvrement n'est compté qu'une fois
+        group_m2, doubled = dissolved_areas(da, shapes)
+        total_m2 = dissolved_areas(da, ((None, g) for _, g in shapes))[0].get(None, 0.0)
+        totals["area"] = convert_area(total_m2, area_unit)
+        warnings += overlap_warning(doubled, "classe" if group_field else "couche")
+        if group_field and math.fsum(group_m2.values()) - total_m2 > OVERLAP_TOL_M2:
+            warnings.append("Des groupes différents se chevauchent : la somme des groupes "
+                            "dépasse le total fusionné (parts > 100 %).")
     data: dict[str, Any] = {
         "method": method,
         "area_method": area_method(da),
@@ -98,13 +116,13 @@ def measure(layer_id: str, metrics: list[str], area_unit: str, length_unit: str,
         "totals": {m: round(totals[m], 6) for m in metrics},
         "stats": {m: describe(all_values[m]) for m in metrics},
     }
-    warnings: list[str] = []
     if group_field:
         rows = []
         for key, first in values[metrics[0]].items():
             row: dict[str, Any] = {"group": key, "count": len(first)}
             for m in metrics:
-                subtotal = math.fsum(values[m][key])
+                subtotal = (convert_area(group_m2[key], area_unit) if m == "area"
+                            else math.fsum(values[m][key]))
                 row[m] = round(subtotal, 6)
                 row[f"{m}_share_pct"] = round(100 * subtotal / totals[m], 2) if totals[m] else None
             rows.append(row)
