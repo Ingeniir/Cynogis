@@ -61,6 +61,7 @@ Tout se passe dans le plugin ; rien à modifier côté serveur.
 .venv/Scripts/python -m pytest                    # tests unitaires (sans QGIS)
 .venv/Scripts/python -m ruff check plugin server scripts tests
 .venv/Scripts/python scripts/ping_qgis.py         # teste le pont sans IA (QGIS + serveur Cynogis démarrés)
+"C:/Program Files/QGIS 4.2.1/bin/python-qgis.bat" scripts/check_surfaces.py  # surfaces de référence (Python de QGIS)
 npx @modelcontextprotocol/inspector .venv/Scripts/python -m cynogis_server
 .venv/Scripts/python scripts/dev_setup.py         # .pth vers PyQGIS + jonction du plugin dans le profil QGIS
 ```

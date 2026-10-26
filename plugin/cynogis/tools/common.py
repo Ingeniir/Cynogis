@@ -278,6 +278,14 @@ def distance_area(crs: QgsCoordinateReferenceSystem,
 
 
 def area_m2(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
+    """Surface en m². Point de passage unique des surfaces : refuse tout SCR géographique
+    (règle métier : jamais de surface en EPSG:4326), quelle que soit la méthode."""
+    crs = da.sourceCrs()
+    if crs.isGeographic():
+        raise ToolError(ErrorCode.CRS_GEOGRAPHIC,
+                        f"Calcul de surface interdit en SCR géographique ({crs.authid()}). "
+                        "Reprojette d'abord la couche (reproject_layer) en EPSG:2975 "
+                        "(La Réunion) ou EPSG:4471 (Mayotte).")
     if not geometry.isGeosValid():  # polygone auto-intersecté : surfaces qui s'annulent
         geometry = geometry.makeValid()
     return da.convertAreaMeasurement(da.measureArea(geometry), Qgis.AreaUnit.SquareMeters)
