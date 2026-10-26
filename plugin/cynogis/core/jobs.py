@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Callable, Generator
+from collections import Counter
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -84,6 +86,34 @@ def run_now(steps: Generator[Pause, Any, Any]) -> Any:
         return stop.value
 
 
+# --- Notes d'exécution ---------------------------------------------------------------------
+# Un helper partagé (ex. area_m2) signale un fait sans le faire remonter à la main : le
+# dispatcher rattache les notes à l'appel en cours (ou à son job) et les ajoute aux warnings.
+_notes: Counter[str] | None = None
+
+
+def note(template: str) -> None:
+    """Note à reporter en avertissement ; {n} dans template = nombre d'occurrences.
+    Hors appel d'outil (console, script), ne fait rien."""
+    if _notes is not None:
+        _notes[template] += 1
+
+
+@contextmanager
+def collecting(notes: Counter[str]) -> Iterator[None]:
+    """Rattache les note() du code exécuté dans le bloc à notes (imbrication possible)."""
+    global _notes
+    previous, _notes = _notes, notes
+    try:
+        yield
+    finally:
+        _notes = previous
+
+
+def render_notes(notes: Counter[str]) -> list[str]:
+    return [template.format(n=n) for template, n in notes.items()]
+
+
 Step = AlgCall | Fetch | Pause
 # Type de retour des outils et helpers qui cèdent des étapes (appel avec « yield from »).
 Steps = Generator[Step, Any, Any]
@@ -122,6 +152,7 @@ class Job:
     handle: Any = None     # étape Processing en cours, None pendant une boucle Python
     progress: float | None = None  # avancement annoncé par la dernière Pause
     response: Any = None   # réponse finale, fournie par finisher
+    notes: Counter[str] = field(default_factory=Counter)  # note() du générateur
     started: float = field(default_factory=time.monotonic)
     finished: float | None = None
 
@@ -136,9 +167,11 @@ class JobManager:
         return next((j for j in self._jobs.values() if j.status == RUNNING), None)
 
     def start(self, tool: str, generator: Generator[Step, Any, Any], first: Step,
-              finisher: Finisher) -> Job:
-        """Démarre un job dont le générateur vient de céder sa première étape."""
-        job = Job(uuid.uuid4().hex[:12], tool, generator, finisher)
+              finisher: Finisher, notes: Counter[str] | None = None) -> Job:
+        """Démarre un job dont le générateur vient de céder sa première étape ; notes
+        reçoit les note() de la suite du générateur."""
+        job = Job(uuid.uuid4().hex[:12], tool, generator, finisher,
+                  notes=Counter() if notes is None else notes)
         self._jobs[job.id] = job
         self._prune()
         self._launch(job, first)
@@ -195,7 +228,8 @@ class JobManager:
         if job.status != RUNNING:
             return
         try:
-            step = job.generator.throw(error) if error else job.generator.send(value)
+            with collecting(job.notes):
+                step = job.generator.throw(error) if error else job.generator.send(value)
         except StopIteration as stop:
             self._finish(job, stop.value, None, DONE)
         except Exception as exc:

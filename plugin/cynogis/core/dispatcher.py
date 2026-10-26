@@ -5,6 +5,7 @@ import dataclasses
 import inspect
 import logging
 import time
+from collections import Counter
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from typing import Any
@@ -12,7 +13,7 @@ from typing import Any
 from ..bridge.protocol import Request, Response
 from .audit import AuditLog
 from .errors import ErrorCode, ToolError
-from .jobs import RUNNING, Executor, JobManager
+from .jobs import RUNNING, Executor, JobManager, collecting, render_notes
 from .policy import PermissionPolicy
 from .registry import Level, ToolRegistry, ToolSpec
 from .schema import Param, validate_params
@@ -80,9 +81,12 @@ class Dispatcher:
                 ErrorCode.UNKNOWN_METHOD, f"Outil inconnu : {request.method}",
                 {"available": self.registry.names}))
         started = time.perf_counter()
+        notes: Counter[str] = Counter()
 
         def finish(result: Any, error: BaseException | None) -> Response:
             response, outputs = self._to_response(request.id, spec, result, error)
+            if response.ok and notes:
+                response.warnings = [*response.warnings, *render_notes(notes)]
             if self.audit is not None and not spec.internal:
                 response.audit_id = self.audit.record(
                     tool=spec.name, level=int(spec.level), params=request.params,
@@ -95,9 +99,10 @@ class Dispatcher:
             params = validate_params(spec.params, request.params)
             self.policy.check(spec, params)
             self._check_busy(spec)  # un job a pu démarrer pendant la fenêtre de confirmation
-            result = spec.handler(**params)
+            with collecting(notes):
+                result = spec.handler(**params)
             if inspect.isgenerator(result):
-                return self._start_job(spec, request, result, finish)
+                return self._start_job(spec, request, result, finish, notes)
         except Exception as exc:  # filet de sécurité : QGIS ne doit jamais planter
             return finish(None, exc)
         return finish(result, None)
@@ -112,17 +117,18 @@ class Dispatcher:
                             f"avant de lancer {spec.name}.")
 
     def _start_job(self, spec: ToolSpec, request: Request, generator: Generator[Any, Any, Any],
-                   finish: Any) -> Response:
+                   finish: Any, notes: Counter[str]) -> Response:
         """Outil générateur : le code jusqu'à la première étape Processing s'exécute ici ;
         la suite devient un job et la réponse part tout de suite avec son job_id."""
         try:
-            first = next(generator)
+            with collecting(notes):
+                first = next(generator)
         except StopIteration as stop:  # aucune étape Processing : réponse immédiate
             return finish(stop.value, None)
         if self.jobs is None:
             generator.close()
             raise ToolError(ErrorCode.INTERNAL_ERROR, "Aucun exécuteur de traitements.")
-        job = self.jobs.start(spec.name, generator, first, finish)
+        job = self.jobs.start(spec.name, generator, first, finish, notes)
         if job.response is not None:  # échec dès le lancement
             return job.response
         return Response(id=request.id, ok=True, data=self.jobs.status(job), job_id=job.id)
