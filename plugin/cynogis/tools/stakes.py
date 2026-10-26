@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from qgis.core import QgsFeature, QgsFields, QgsMemoryProviderUtils
+from qgis.core import QgsFeature, QgsFields, QgsGeometry, QgsMemoryProviderUtils
 
 from ..core import stakes
 from ..core.dispatcher import ToolResult
@@ -13,13 +13,14 @@ from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
     add_to_memory,
-    area_m2,
     area_method,
+    dissolved_areas,
     distance_area,
     feature_request,
     geometry_kind,
     get_vector_layer,
     make_field,
+    overlap_warning,
     prepare_expression,
 )
 from .geoprocessing import OUTPUT_NAME
@@ -82,6 +83,7 @@ def stake_scoring(layer_id: str, criteria: list, overrides: list | None,
     raised: Counter = Counter()
     by_level: dict[int, list[float]] = {n: [0, 0.0] for n in stakes.LEVELS}
     out = []
+    shapes: list[tuple[int, QgsGeometry]] = []  # (niveau, géométrie) : surfaces par niveau
     for feature in layer.getFeatures(feature_request(layer)):
         values = {}
         for criterion in parsed:
@@ -108,9 +110,12 @@ def stake_scoring(layer_id: str, criteria: list, overrides: list | None,
                             forced, detail])
         out.append(copy)
         by_level[level][0] += 1
-        by_level[level][1] += area_m2(da, feature.geometry()) / 10_000.0
+        shapes.append((level, feature.geometry()))
     if not out:
         raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} ne contient aucun polygone.")
+    level_m2, doubled = dissolved_areas(da, shapes)  # recouvrements comptés une fois
+    for n, m2 in level_m2.items():
+        by_level[n][1] = m2 / 10_000.0
     notes = add_to_memory(memory, out)
 
     result = save_to_project(memory, output_name or f"enjeux_{layer.name()}")
@@ -131,4 +136,5 @@ def stake_scoring(layer_id: str, criteria: list, overrides: list | None,
     })
     for name, count in missing.items():
         result.warnings.append(f"Critère {name} : {count} polygone(s) sans valeur (note 0).")
+    result.warnings += overlap_warning(doubled, "classe d'enjeu")
     return result

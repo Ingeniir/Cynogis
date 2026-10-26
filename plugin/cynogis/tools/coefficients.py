@@ -14,12 +14,14 @@ from ..core.schema import Param
 from .common import (
     area_m2,
     area_method,
+    dissolved_areas,
     distance_area,
     feature_request,
     geometry_kind,
     get_vector_layer,
     group_key,
     iter_geometries,
+    overlap_warning,
     perimeter_m,
     require_field,
     to_json_value,
@@ -160,10 +162,11 @@ def _reference_areas(reference_layer_id: str, group_field: str | None,
             return {}
         ref_field = reference.fields().at(index).name()
     da = distance_area(reference.crs())
-    areas: dict[Any, float] = {}
-    for feature, geometry in _geometries(reference, [ref_field] if ref_field else [], reference):
-        key = group_key(feature[ref_field]) if ref_field else GLOBAL
-        areas[key] = areas.get(key, 0.0) + area_m2(da, geometry)
+    areas, doubled = dissolved_areas(da, (
+        (group_key(feature[ref_field]) if ref_field else GLOBAL, geometry)
+        for feature, geometry in _geometries(reference, [ref_field] if ref_field else [],
+                                             reference)))
+    warnings += overlap_warning(doubled, "surface de référence")
     return areas
 
 

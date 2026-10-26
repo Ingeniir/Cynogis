@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -303,6 +304,40 @@ def area_method(da: QgsDistanceArea) -> str:
     if da.willUseEllipsoid():
         return f"ellipsoïdale ({da.ellipsoid()}), surface projetée 2D"
     return f"planaire ({da.sourceCrs().authid()}), surface projetée 2D"
+
+
+OVERLAP_TOL_M2 = 0.01  # en deçà : bruit de calcul, pas un recouvrement
+
+
+def dissolved_areas(da: QgsDistanceArea, items: Iterable[tuple[Any, QgsGeometry]]
+                    ) -> tuple[dict[Any, float], dict[Any, float]]:
+    """Surface (m²) de chaque clé après fusion de ses géométries : une zone couverte par
+    plusieurs entités d'une même classe n'est comptée qu'une fois (trous et multi-polygones
+    respectés). Renvoie aussi, par clé, la surface comptée en double sans fusion."""
+    groups: dict[Any, list[QgsGeometry]] = {}
+    for key, geometry in items:
+        groups.setdefault(key, []).append(geometry)
+    areas: dict[Any, float] = {}
+    doubled: dict[Any, float] = {}
+    for key, geometries in groups.items():
+        naive = math.fsum(area_m2(da, g) for g in geometries)
+        merged = QgsGeometry.unaryUnion(
+            [g if g.isGeosValid() else g.makeValid() for g in geometries]
+        ) if len(geometries) > 1 else None
+        areas[key] = naive if merged is None or merged.isNull() else area_m2(da, merged)
+        if naive - areas[key] > OVERLAP_TOL_M2:
+            doubled[key] = naive - areas[key]
+    return areas, doubled
+
+
+def overlap_warning(doubled: dict[Any, float], what: str = "classe") -> list[str]:
+    """Avertissement des doubles comptes évités par dissolved_areas (vide sinon)."""
+    if not doubled:
+        return []
+    keys = ", ".join(str(k) for k in list(doubled)[:10]) + ("…" if len(doubled) > 10 else "")
+    return [f"Entités qui se chevauchent au sein d'une même {what} ({keys}) : "
+            f"{math.fsum(doubled.values()):.2f} m² n'ont été comptés qu'une fois (surfaces "
+            f"fusionnées par {what}). Localiser les chevauchements avec detect_overlaps."]
 
 
 def length_m(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
