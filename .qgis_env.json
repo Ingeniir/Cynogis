@@ -1,0 +1,9 @@
+{
+  "qgis_version": "4.2.1-Belém do Pará",
+  "qt_version": "6.11.0",
+  "python_version": "3.12.13",
+  "python_prefix": "C:\\PROGRA~1\\QGIS42~1.1\\apps\\Python312",
+  "qgis_python_dir": "C:\\PROGRA~1/QGIS42~1.1/apps/qgis/./python",
+  "pyqt_dir": "C:\\PROGRA~1\\QGIS42~1.1\\apps\\Python312\\Lib\\site-packages",
+  "plugins_dir": "C:/Users/hoare/AppData/Roaming/QGIS/QGIS4\\profiles\\default/python\\plugins"
+}

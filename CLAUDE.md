@@ -72,3 +72,30 @@ npx @modelcontextprotocol/inspector .venv/Scripts/python -m cynogis_server
 - Le plugin est lié par jonction dans le profil QGIS : après une modification du plugin, **recharger le plugin dans QGIS** (Plugin Reloader ou redémarrage) — sinon le serveur MCP parle à l'ancien code.
 - Le bouton « Serveur GeoMCP » de la barre d'outils démarre/arrête le pont ; sans lui, `QGIS_UNAVAILABLE`.
 - `[UNKNOWN] Erreur inconnue` côté client = réponse `ok:false` sans champ `error` → bug côté plugin.
+
+## Navigation
+- Consulter graphify-out/GRAPH_REPORT.md avant d'explorer le code.
+
+## Règles métier (non négociables)
+- Systèmes de coordonnées : La Réunion = EPSG:2975 (RGR92 / UTM 40S), Mayotte = EPSG:4471 (RGM04 / UTM 38S).
+  Ne jamais calculer une surface en EPSG:4326.
+- Surfaces : toujours indiquer la méthode (plane ou ellipsoïdale, projetée ou 3D).
+- Natura 2000 NE S'APPLIQUE PAS dans les départements d'outre-mer : ne jamais le proposer.
+- Les seuils réglementaires sont dans [fichier de config] : ne jamais les écrire en dur.
+- Pré-diagnostic : déterministe (intersections réelles), jamais rédigé par le LLM.
+
+## Sécurité
+- Ne jamais contourner les niveaux de permission, la confirmation humaine ni le journal d'audit.
+- Les sorties ne doivent jamais écraser de fichiers existants.
+- Ne jamais lire ni envoyer au modèle les données d'espèces sensibles ou les données cadastrales nominatives.
+
+## Conventions
+- Linting avec Ruff obligatoire avant chaque commit.
+- Tâches longues dans des QgsTask (jamais dans le fil de l'interface).
+- Une branche par fonctionnalité.
+
+## Fin de tâche
+- Après une implémentation terminée et des tests au vert, lancer `graphify update .`
+  (analyse du code uniquement, sans LLM) puis inclure graphify-out/ dans le commit.
+- Si README, docs/ ou CLAUDE.md ont été modifiés, me le signaler pour que je lance
+  `/graphify . --update`.

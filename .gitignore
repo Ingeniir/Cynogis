@@ -1,10 +1,67 @@
-.venv/
+# =========================================================
+# Python / outils de développement
+# =========================================================
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+venv/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# =========================================================
+# Construction du plugin QGIS
+# =========================================================
+build/
 dist/
 *.zip
-.idea/
-.qgis_env.json
-RAPORT.md
+
+# =========================================================
+# QGIS : fichiers temporaires et verrous
+# =========================================================
+*.qgs~
+*.qgz~
+*.aux.xml
+*.gpkg-wal
+*.gpkg-shm
+*.lock
+
+# =========================================================
+# Données géographiques volumineuses ou sensibles
+# (adaptez les dossiers à votre arborescence)
+# =========================================================
+data/
+donnees/
+*.tif
+*.tiff
+*.ecw
+*.laz
+*.las
+# Observations d'espèces, cadastre nominatif, données client
+# -> ne JAMAIS les versionner (SINP / RGPD / clauses des marchés)
+
+# =========================================================
+# Graphify : on versionne la carte, pas l'état local
+# =========================================================
+# Coût des appels LLM, propre à chaque machine
+graphify-out/cost.json
+# Cache d'extraction (empreintes SHA256), volumineux
+graphify-out/cache/
+# Détection des changements (peut contenir des chemins absolus)
+graphify-out/manifest.json
+# Métadonnées cachées et fichiers temporaires
+graphify-out/.graphify_*
+graphify-out/.pkg_labels.json
+graphify-out/.pkg_summary.json
+graphify-out/*.sig
+# Sauvegardes datées créées automatiquement
+graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
+# Notes personnelles de questions-réponses (propres à chaque développeur)
+graphify-out/memory/
+graphify-out/reflections/
+# Visualisation lourde, régénérable (facultatif)
+graphify-out/graph.html
+# Sauvegarde créée par « graphify install »
+.claude/settings.json.graphify-bak
+.claude/settings.local.json
