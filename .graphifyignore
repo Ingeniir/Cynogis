@@ -1,0 +1,11 @@
+# Fichiers de test SIG (utiles aux tests de surface, inutiles dans le graphe)
+tests/fixtures/
+*.gpkg
+*.geojson
+*.shp
+*.qml
+*.qgz
+# Ressources de l'interface générées par Qt
+resources_rc.py
+*.ui
+i18n/
