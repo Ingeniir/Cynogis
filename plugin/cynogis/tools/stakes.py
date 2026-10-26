@@ -14,6 +14,7 @@ from ..core.schema import Param
 from .common import (
     add_to_memory,
     area_m2,
+    area_method,
     distance_area,
     feature_request,
     geometry_kind,
@@ -126,7 +127,7 @@ def stake_scoring(layer_id: str, criteria: list, overrides: list | None,
                     "area_ha": round(area, 4),
                     "percent": round(area / surface * 100, 2) if surface else None}
                    for n, (count, area) in by_level.items()],
-        "overrides_applied": dict(raised),
+        "overrides_applied": dict(raised), "area_method": area_method(da),
     })
     for name, count in missing.items():
         result.warnings.append(f"Critère {name} : {count} polygone(s) sans valeur (note 0).")

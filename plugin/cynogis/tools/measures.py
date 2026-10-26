@@ -18,6 +18,7 @@ from ..core.stats import describe, describe_groups, to_float
 from ..core.units import AREA_UNITS, LENGTH_UNITS, convert_area, convert_length
 from .common import (
     area_m2,
+    area_method,
     distance_area,
     feature_request,
     geometry_kind,
@@ -91,6 +92,7 @@ def measure(layer_id: str, metrics: list[str], area_unit: str, length_unit: str,
     totals = {m: math.fsum(all_values[m]) for m in metrics}
     data: dict[str, Any] = {
         "method": method,
+        "area_method": area_method(da),
         "units": {"area": area_unit, "perimeter": length_unit, "length": length_unit},
         "feature_count": len(all_values[metrics[0]]),
         "totals": {m: round(totals[m], 6) for m in metrics},
@@ -285,7 +287,7 @@ def shape_indices(layer_id: str, indices: list[str], reference_layer_id: str | N
         warnings.append("Allongement calculé en SCR géographique (degrés) : valeurs déformées, "
                         "reprojette la couche (EPSG:2975 / EPSG:4471).")
     return ToolResult({
-        "feature_count": len(rows), "summary": summary,
+        "feature_count": len(rows), "summary": summary, "area_method": area_method(da),
         "features": rows[offset:offset + limit], "has_more": offset + limit < len(rows),
     }, warnings)
 
@@ -375,6 +377,7 @@ def habitat_area_stats(layer_id: str, class_field: str, study_area_layer_id: str
                         f"{(mapped - covered) / 10_000:.2f} ha comptés plusieurs fois (parts "
                         "faussées) ; check_geometries ou resolve_overlaps.")
     data: dict[str, Any] = {"layer": layer.name(), "class_field": class_field,
+                            "area_method": area_method(da),
                             "study_area_ha": round(study / 10_000, 4),
                             "mapped_ha": round(covered / 10_000, 4),
                             "headers": HABITAT_HEADERS, "rows": rows}

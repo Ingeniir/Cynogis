@@ -25,6 +25,7 @@ from ..core.schema import Param
 from .common import (
     add_to_memory,
     area_m2,
+    area_method,
     distance_area,
     geometry_kind,
     get_vector_layer,
@@ -218,6 +219,7 @@ def kernel_density_points(layer_id: str, radius_m: float, pixel_size_m: float | 
     result.data.update({
         "points": count, "radius_m": float(radius_m), "pixel_size_m": pixel, "kernel": kernel,
         "weight_field": weight_field, "max_density": round(maximum, 6),
+        "area_method": area_method(distance_area(layer.crs(), "planar")) + ", par pixels",
         "isopleths": [{"share": f"{share * 100:.0f} %", "min_density": round(t, 6),
                        "area_ha": area}
                       for share, t, area in thresholds],

@@ -35,6 +35,7 @@ from ..core.units import AREA_UNITS, convert_area
 from .common import (
     add_to_memory,
     area_m2,
+    area_method,
     distance_area,
     feature_request,
     geometry_kind,
@@ -158,6 +159,7 @@ def detect_overlaps(layer_id: str, other_layer_id: str | None, min_area_m2: floa
     if internal and pairs:
         warnings.append("Une zone couverte par 3 entités ou plus est comptée plusieurs fois dans "
                         "total_overlap_area.")
+    data["area_method"] = area_method(da)
     return ToolResult(data, warnings)
 
 
@@ -339,4 +341,5 @@ def resolve_overlaps(layer_id: str, strategy: str, priority_field: str | None,
     if field is None and strategy == "keep_oldest":
         tool_result.warnings.append("keep_oldest sans priority_field : l'ordre de lecture des "
                                     "entités sert de critère d'ancienneté.")
+    tool_result.data["area_method"] = area_method(da)
     return tool_result

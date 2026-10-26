@@ -13,6 +13,7 @@ from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
     area_m2,
+    area_method,
     distance_area,
     feature_request,
     geometry_kind,
@@ -141,6 +142,7 @@ def compute_coefficients(layer_id: str, category_field: str, group_field: str | 
                             f"{', '.join(missing)}.")
     results.sort(key=lambda item: str(item["group"]))
     return ToolResult({"layer": layer.name(), "group_field": group_field,
+                       "area_method": area_method(da),
                        "group_count": len(results), "results": results[:MAX_RESULTS],
                        "truncated": len(results) > MAX_RESULTS}, warnings)
 
@@ -214,6 +216,7 @@ def landscape_metrics(layer_id: str, class_field: str | None, zone_layer_id: str
                         f"(zone « {OUTSIDE} »).")
     results.sort(key=lambda item: -(item.get("total_area_m2") or 0.0))
     return ToolResult({"layer": layer.name(), "class_field": class_field,
+                       "area_method": area_method(da),
                        "zone_count": len(results), "results": results[:200]}, warnings)
 
 

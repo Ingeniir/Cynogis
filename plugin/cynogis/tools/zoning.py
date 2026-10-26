@@ -37,6 +37,7 @@ from ..core.territory import TERRITORIES, detect_territory
 from .common import (
     add_to_memory,
     area_m2,
+    area_method,
     distance_area,
     extent_wgs84,
     feature_request,
@@ -430,6 +431,7 @@ def regulatory_zoning_intersect(layer_id: str, zonings: list | None,
         result.data["intersection_layer"] = saved.data["outputs"][0]
         result.outputs.extend(saved.outputs)
         result.warnings.extend(notes + [w for w in saved.warnings if w not in result.warnings])
+    result.data["area_method"] = area_method(da)
     return result
 
 

@@ -17,6 +17,7 @@ from ..core.territory import detect_territory
 from .common import (
     add_to_memory,
     area_m2,
+    area_method,
     distance_area,
     extent_wgs84,
     feature_request,
@@ -169,6 +170,7 @@ def create_study_area_buffers(layer_id: str, immediate_m: float, close_m: float,
     result = save_to_project(memory, _name(output_name, "aires_etude", layer.name()))
     result.warnings.extend(notes)
     result.data.update({"rings": bool(rings), "project_features": len(geometries),
+                        "area_method": area_method(da),
                         "areas": summary[::-1]})
     return result
 

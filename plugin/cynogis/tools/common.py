@@ -291,6 +291,13 @@ def area_m2(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
     return da.convertAreaMeasurement(da.measureArea(geometry), Qgis.AreaUnit.SquareMeters)
 
 
+def area_method(da: QgsDistanceArea) -> str:
+    """Méthode de surface à indiquer dans chaque sortie qui contient des surfaces."""
+    if da.willUseEllipsoid():
+        return f"ellipsoïdale ({da.ellipsoid()}), surface projetée 2D"
+    return f"planaire ({da.sourceCrs().authid()}), surface projetée 2D"
+
+
 def length_m(da: QgsDistanceArea, geometry: QgsGeometry) -> float:
     return da.convertLengthMeasurement(da.measureLength(geometry), Qgis.DistanceUnit.Meters)
 
