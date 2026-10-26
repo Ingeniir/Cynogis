@@ -33,6 +33,7 @@ from ..core.units import LENGTH_UNITS, convert_length
 from .common import (
     add_to_memory,
     area_m2,
+    area_method,
     distance_area,
     feature_request,
     geometry_kind,
@@ -183,6 +184,7 @@ def count_points_in_polygon(polygon_layer_id: str, point_layer_id: str,
         warnings.append(f"{len(geometries) - len(inside)} point(s) hors de tout polygone.")
     return ToolResult({
         "polygon_count": len(rows), "point_count": len(geometries),
+        "area_method": area_method(da),
         "points_inside": len(inside), "points_outside": len(geometries) - len(inside),
         "empty_polygons": sum(1 for r in rows if r["count"] == 0),
         "count_stats": describe([r["count"] for r in rows]),
@@ -484,6 +486,7 @@ def invasive_species_map(polygon_layer_id: str, eee_layer_id: str, eee_filter: s
         warnings.append(f"{over} polygone(s) avec un recouvrement cumulé > 100 % (taches qui "
                         "se chevauchent) : ramené à 100 %.")
     result.warnings[:0] = warnings
+    result.data["area_method"] = area_method(da)
     return result
 
 @tool(level=Level.CREATE, params={
@@ -591,6 +594,7 @@ def points_to_polygon(layer_id: str, method: str, group_field: str | None,
     if repaired:
         result.warnings.append(f"{repaired} polygone(s) auto-intersecté(s) réparé(s) : vérifie "
                                "l'ordre des points (order_field).")
+    result.data["area_method"] = area_method(da)
     return result
 
 

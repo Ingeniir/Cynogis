@@ -35,7 +35,7 @@ Tout se passe dans le plugin ; rien à modifier côté serveur.
 2. Niveaux : `READ` (lecture), `CREATE` (nouvelles données), `MODIFY` (tampon d'édition), `DESTROY` (confirmation humaine via `ui/confirm.py`).
 3. Retour : `dict` = succès ; `ToolResult(data, warnings, outputs)` pour des avertissements ou des fichiers créés (audit) ; lever `ToolError(ErrorCode.X, msg, details)` pour une erreur métier. Validation des paramètres, permissions et audit sont faits par `core/dispatcher.py`.
 4. Nouveau module : l'ajouter à `TOOL_MODULES` dans `plugin.py` (`register_module` échoue si le module ne contient aucun `@tool`).
-5. Helpers PyQGIS partagés dans `tools/common.py` (`get_vector_layer`, `require_field`, `feature_request`, `distance_area`…).
+5. Helpers PyQGIS partagés dans `tools/common.py` (`get_vector_layer`, `require_field`, `feature_request`, `distance_area`…). Surfaces : toujours `area_m2(distance_area(crs), geom)` (refuse les SCR géographiques) et ajouter `"area_method": area_method(da)` aux données renvoyées.
 6. Outil `DESTROY` : `register_detail_provider(nom, fn)` (`ui/confirm.py`) affiche l'impact (nb d'entités…) dans la fenêtre de confirmation.
 7. Édition (`tools/editing.py`) : toujours dans le tampon (`begin_edit`), tracer chaque opération dans `core/edits.py::JOURNAL` ; seul `request_commit` (DESTROY) écrit sur disque.
 

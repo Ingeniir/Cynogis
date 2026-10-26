@@ -20,6 +20,7 @@ from ..core.schema import Param
 from .common import (
     add_to_memory,
     area_m2,
+    area_method,
     distance_area,
     feature_request,
     geometry_kind,
@@ -190,6 +191,7 @@ def impact_quantification(footprint_layer_id: str, habitats_layer_id: str, class
         rows = [[v for i, v in enumerate(r) if i != 1] for r in rows]
     base = output_name or f"impacts_{footprint.name()}"
     data: dict[str, Any] = {
+        "area_method": area_method(distance_area(crs)),
         "categories": categories,
         "category_area_ha": {label: round(zone_areas[label] / 10_000, 4)
                              for label in categories},
@@ -360,6 +362,7 @@ def erc_variant_compare(habitats_layer_id: str, class_field: str,
     base = output_name or "variantes_erc"
     data: dict[str, Any] = {"variants": len(variants), "headers": headers, "rows": rows,
                             "best": rows[0][0], "indirect_rings": rings,
+                            "area_method": area_method(da),
                             "weighted_by": "enjeu" if stake_field else "surface"}
     outputs: list[str] = []
     if export_format != "none":

@@ -21,7 +21,7 @@ APP = QgsApplication([], False)
 APP.initQgis()
 
 from cynogis.core.errors import ErrorCode, ToolError  # noqa: E402
-from cynogis.tools.common import area_m2, distance_area  # noqa: E402
+from cynogis.tools.common import area_m2, area_method, distance_area  # noqa: E402
 
 PLANAR_TOL_M2 = 1e-6     # tolérance absolue, surface planaire
 ELLIPSOIDAL_TOL = 1e-5   # tolérance relative (0,001 %), surface ellipsoïdale
@@ -64,6 +64,9 @@ def check_site(authid: str, label: str, x: float, y: float, lat: float) -> None:
         "papillon": (f"POLYGON(({x} {y}, {x + 10} {y + 10}, {x + 10} {y}, "
                      f"{x} {y + 10}, {x} {y}))", 50.0),
     }
+    assert area_method(planar) == f"planaire ({authid}), surface projetée 2D", \
+        area_method(planar)
+    assert area_method(ellipsoidal).startswith("ellipsoïdale ("), area_method(ellipsoidal)
     k = utm_scale(x + 50, lat)
     for name, (wkt, expected) in cases.items():
         geometry = QgsGeometry.fromWkt(wkt)
@@ -74,7 +77,7 @@ def check_site(authid: str, label: str, x: float, y: float, lat: float) -> None:
         assert abs(got / reference - 1) < ELLIPSOIDAL_TOL, \
             f"{label} {name} ellipsoïdal : {got} au lieu de {reference}"
     print(f"✓ {label} ({authid}) : {len(cases)} cas, écart planaire/ellipsoïdal "
-          f"{100 * (1 - k * k):+.4f} %")
+          f"{100 * (1 - k * k):+.4f} %, méthode « {area_method(ellipsoidal)} »")
 
 
 def check_geographic_rejected() -> None:

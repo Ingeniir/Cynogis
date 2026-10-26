@@ -30,6 +30,7 @@ from ..core.schema import Param
 from .common import (
     add_to_memory,
     area_m2,
+    area_method,
     distance_area,
     feature_request,
     geometry_kind,
@@ -290,4 +291,5 @@ def clip_reference_landcover(layer_id: str, source: str, feature_ids: list | Non
     if review:
         result.warnings.append(f"Correspondances à vérifier sur "
                                f"{sum(review.values()) / M2_PER_HA:.2f} ha : voir to_review.")
+    result.data["area_method"] = area_method(da)
     return result

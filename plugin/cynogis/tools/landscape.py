@@ -25,6 +25,7 @@ from ..core.territory import detect_territory
 from .common import (
     add_to_memory,
     area_m2,
+    area_method,
     distance_area,
     extent_wgs84,
     feature_request,
@@ -220,6 +221,7 @@ def classify_landscape(layer_id: str, source_field: str, mapping: dict,
         result.warnings.append(f"{small} unité(s) sous {min_area_m2:g} m² (pays_resid = 1) : à "
                                "fusionner ou écarter.")
     result.warnings[:0] = warnings
+    result.data["area_method"] = area_method(da)
     return result
 
 
