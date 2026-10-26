@@ -367,9 +367,11 @@ STALE_FIELDS = ("Les champs de surface ou de longueur déjà calculés (ex. pays
 
 
 def _measure(layer: QgsVectorLayer, geometry: QgsGeometry) -> float | None:
-    """Surface (m²) ou longueur (m) ellipsoïdale, None pour des points ou sans SCR."""
+    """Surface (m²) ou longueur (m) ellipsoïdale, None pour des points, sans SCR ou (surface)
+    en SCR géographique : mesure informative, elle ne doit pas faire échouer l'édition."""
     kind = geometry_kind(layer)
-    if kind not in ("polygon", "line") or not layer.crs().isValid():
+    if kind not in ("polygon", "line") or not layer.crs().isValid() or (
+            kind == "polygon" and layer.crs().isGeographic()):
         return None
     da = distance_area(layer.crs())
     return round(area_m2(da, geometry) if kind == "polygon" else length_m(da, geometry), 2)

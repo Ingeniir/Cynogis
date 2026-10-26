@@ -45,9 +45,9 @@ _ALLOWED = {"polygon": {"area", "perimeter"}, "line": {"length"}}
                        enum=tuple(AREA_UNITS)),
     "length_unit": Param("string", "Unité des longueurs et périmètres.", required=False,
                          default="m", enum=tuple(LENGTH_UNITS)),
-    "method": Param("string", "ellipsoidal (recommandé, fiable quel que soit le SCR) ou planar "
-                    "(dans le SCR projeté de la couche).", required=False,
-                    default="ellipsoidal", enum=("ellipsoidal", "planar")),
+    "method": Param("string", "ellipsoidal (recommandé) ou planar (dans le SCR projeté de "
+                    "la couche). Surfaces refusées en SCR géographique (EPSG:4326).",
+                    required=False, default="ellipsoidal", enum=("ellipsoidal", "planar")),
     "group_by": Param("string", "Champ de regroupement (ex. type de paysage, commune).",
                       required=False),
     "filter_expression": Param("string", FILTER_HELP, required=False),
