@@ -93,3 +93,9 @@ npx @modelcontextprotocol/inspector .venv/Scripts/python -m cynogis_server
 - Linting avec Ruff obligatoire avant chaque commit.
 - Tâches longues dans des QgsTask (jamais dans le fil de l'interface).
 - Une branche par fonctionnalité.
+
+## Fin de tâche
+- Après une implémentation terminée et des tests au vert, lancer `graphify update .`
+  (analyse du code uniquement, sans LLM) puis inclure graphify-out/ dans le commit.
+- Si README, docs/ ou CLAUDE.md ont été modifiés, me le signaler pour que je lance
+  `/graphify . --update`.
