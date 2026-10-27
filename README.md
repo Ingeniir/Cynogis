@@ -94,7 +94,7 @@ Copier (ou lier) `plugin/cynogis` dans le dossier des plugins du profil QGIS :
 Pour le développement, `scripts/dev_setup.py` crée la jonction et l'autocomplétion PyQGIS (voir plus bas).
 
 Activer **Cynogis Réunion-Mayotte** dans *Extensions → Installer/Gérer les extensions*, puis cliquer
-sur le bouton **« Serveur GeoMCP »** de la barre d'outils pour démarrer le pont.
+sur le bouton **« Serveur Cynogis »** de la barre d'outils pour démarrer le pont.
 
 ### 3. Client MCP
 
@@ -170,7 +170,7 @@ Conventions détaillées : [`CLAUDE.md`](CLAUDE.md) et [`RAPORT.md`](RAPORT.md).
 
 | Symptôme | Cause |
 |---|---|
-| `QGIS_UNAVAILABLE` | QGIS fermé ou pont non démarré (bouton « Serveur GeoMCP ») |
+| `QGIS_UNAVAILABLE` | QGIS fermé ou pont non démarré (bouton « Serveur Cynogis ») |
 | Le comportement ne suit pas le code | plugin non rechargé dans QGIS |
 | `[UNKNOWN] Erreur inconnue` | réponse d'erreur mal formée côté plugin : voir le journal QGIS, onglet « Cynogis » |
 | Appel abandonné après 120 s | traitement trop long sur le thread principal de QGIS |

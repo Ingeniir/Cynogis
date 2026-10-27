@@ -71,7 +71,7 @@ npx @modelcontextprotocol/inspector .venv/Scripts/python -m cynogis_server
 ## Débogage
 
 - Le plugin est lié par jonction dans le profil QGIS : après une modification du plugin, **recharger le plugin dans QGIS** (Plugin Reloader ou redémarrage) — sinon le serveur MCP parle à l'ancien code.
-- Le bouton « Serveur GeoMCP » de la barre d'outils démarre/arrête le pont ; sans lui, `QGIS_UNAVAILABLE`.
+- Le bouton « Serveur Cynogis » de la barre d'outils démarre/arrête le pont ; sans lui, `QGIS_UNAVAILABLE`.
 - `[UNKNOWN] Erreur inconnue` côté client = réponse `ok:false` sans champ `error` → bug côté plugin.
 
 ## Navigation
