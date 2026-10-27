@@ -15,6 +15,9 @@ from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
     add_to_memory,
+    area_m2,
+    area_method,
+    distance_area,
     feature_request,
     geometry_kind,
     get_raster_layer,
@@ -195,6 +198,30 @@ def _slope_aspect(z: numpy.ndarray, dx: float, dy: float):
     return slope, aspect
 
 
+def _pixel_labels(geometries, transform: tuple, cols: int, rows: int
+                  ) -> tuple[numpy.ndarray, numpy.ndarray]:
+    """Chaque pixel de la fenêtre reçoit le n° du polygone qui contient son centre ; renvoie
+    (ordre, n° triés) : les pixels du polygone i sont order[searchsorted(i) : searchsorted(i+1)]."""
+    raster = gdal.GetDriverByName("MEM").Create("", cols, rows, 1, gdal.GDT_Int32)
+    raster.SetGeoTransform(transform)
+    raster.GetRasterBand(1).Fill(-1)
+    driver = ogr.GetDriverByName("MEM")
+    if driver is None or driver.GetMetadataItem(gdal.DCAP_VECTOR) != "YES":
+        driver = ogr.GetDriverByName("Memory")
+    source = driver.CreateDataSource("")
+    vectors = source.CreateLayer("p")
+    vectors.CreateField(ogr.FieldDefn("idx", ogr.OFTInteger))
+    for index, geometry in enumerate(geometries):
+        feature = ogr.Feature(vectors.GetLayerDefn())
+        feature.SetField("idx", index)
+        feature.SetGeometry(ogr.CreateGeometryFromWkb(bytes(geometry.asWkb())))
+        vectors.CreateFeature(feature)
+    gdal.RasterizeLayer(raster, [1], vectors, options=["ATTRIBUTE=idx"])
+    flat_labels = raster.GetRasterBand(1).ReadAsArray().ravel()
+    order = numpy.argsort(flat_labels, kind="stable")
+    return order, flat_labels[order]
+
+
 def _sector_index(aspect: numpy.ndarray) -> numpy.ndarray:
     return (((aspect + 22.5) % 360.0) // 45.0).astype("int64")
 
@@ -253,27 +280,8 @@ def elevation_sample(layer_id: str, dem_layer_id: str, altitude_bands: list | No
             return None, None, None
         return z[cell], slope[cell], aspect[cell]
 
-    labels = None
-    if kind == "polygon":  # chaque pixel reçoit le n° du polygone qui le contient
-        raster = gdal.GetDriverByName("MEM").Create("", cols, rows, 1, gdal.GDT_Int32)
-        raster.SetGeoTransform(transform)
-        raster.GetRasterBand(1).Fill(-1)
-        driver = ogr.GetDriverByName("MEM")
-        if driver is None or driver.GetMetadataItem(gdal.DCAP_VECTOR) != "YES":
-            driver = ogr.GetDriverByName("Memory")
-        source = driver.CreateDataSource("")
-        vectors = source.CreateLayer("p")
-        vectors.CreateField(ogr.FieldDefn("idx", ogr.OFTInteger))
-        for index, (_, geometry) in enumerate(items):
-            feature = ogr.Feature(vectors.GetLayerDefn())
-            feature.SetField("idx", index)
-            feature.SetGeometry(ogr.CreateGeometryFromWkb(bytes(geometry.asWkb())))
-            vectors.CreateFeature(feature)
-        gdal.RasterizeLayer(raster, [1], vectors, options=["ATTRIBUTE=idx"])
-        flat_labels = raster.GetRasterBand(1).ReadAsArray().ravel()
-        order = numpy.argsort(flat_labels, kind="stable")
-        sorted_labels = flat_labels[order]
-        labels = (order, sorted_labels)
+    labels = (_pixel_labels([g for _, g in items], transform, cols, rows)
+              if kind == "polygon" else None)
 
     specs = POINT_FIELDS if kind == "point" else POLYGON_FIELDS
     specs = specs + ((("alt_classe", "string"),) if bands else ())
@@ -359,6 +367,123 @@ def elevation_sample(layer_id: str, dem_layer_id: str, altitude_bands: list | No
                                "valeurs prises au centre.")
     return result
 
+
+# --- Surface réelle (3D) ----------------------------------------------------
+SURFACE_3D_FIELDS = (("surf_proj_m2", "real"), ("surf_3d_m2", "real"), ("ratio_3d", "real"),
+                     ("couv_mnt", "real"), ("mnt_res_m", "real"), ("pente_plaf", "real"))
+
+
+def _surface_factors(dem, geometries, max_slope_deg: float
+                     ) -> tuple[list[tuple[float | None, int, int]], float]:
+    """Par polygone : (moyenne de 1/cos(pente) sur ses pixels avec donnée ou None, pixels
+    avec donnée, pixels du polygone), et la taille du pixel (m). Pente de Horn plafonnée à
+    max_slope_deg ; un polygone plus petit qu'un pixel prend le pixel de son centre."""
+    z, transform, cols, rows = _read_window(dem, geometries)
+    x0, width, _, y0, _, height = transform
+    slope, _ = _slope_aspect(z, abs(width), abs(height))
+    # NaN (trou du MNT ou voisin d'un trou) propagé : pixel sans donnée
+    factor = (1.0 / numpy.cos(numpy.radians(numpy.minimum(slope, max_slope_deg)))).ravel()
+    order, sorted_labels = _pixel_labels(geometries, transform, cols, rows)
+    stats = []
+    for index, geometry in enumerate(geometries):
+        start, end = numpy.searchsorted(sorted_labels, [index, index + 1])
+        cells = order[start:end]
+        if not cells.size:
+            center = geometry.centroid().asPoint()
+            col, row = int((center.x() - x0) // width), int((center.y() - y0) // height)
+            if 0 <= row < rows and 0 <= col < cols:
+                cells = numpy.array([row * cols + col])
+        values = factor[cells]
+        valid = values[numpy.isfinite(values)]
+        stats.append((float(valid.mean()) if valid.size else None, int(valid.size),
+                      int(cells.size)))
+    return stats, abs(width)
+
+
+@tool(level=Level.CREATE, params={
+    "layer_id": Param("string", "Polygones (layer_id) : habitats, emprises, parcelles…"),
+    "dem_layer_id": Param("string", "MNT raster (layer_id) : sol nu, jamais un MNS ; en SCR "
+                          "métrique (EPSG:2975, EPSG:4471). LiDAR HD IGN (0,5 m) de "
+                          "préférence, sinon RGE ALTI (1 ou 5 m), Litto3D sur le littoral."),
+    "max_slope_deg": Param("number", "Plafond de pente (falaises, remparts) : au-delà, la pente "
+                           "est ramenée au plafond (1/cos tend vers l'infini près de 90°).",
+                           required=False, default=relief.MAX_SLOPE_DEG, minimum=0, maximum=89),
+    "min_coverage_pct": Param("number", "Couverture minimale du polygone par le MNT (pixels "
+                              "avec donnée) sous laquelle surf_3d_m2 reste vide : zones "
+                              "sensibles non diffusées, dalles manquantes.", required=False,
+                              default=relief.MIN_COVERAGE_PCT, minimum=0, maximum=100),
+    "output_name": OUTPUT_NAME,
+})
+def surface_3d(layer_id: str, dem_layer_id: str, max_slope_deg: float,
+               min_coverage_pct: float, output_name: str | None) -> ToolResult:
+    """Surface réelle (3D) des polygones d'après un MNT, EN COMPLÉMENT de la surface
+    projetée. La surface projetée (surf_proj_m2) reste la référence réglementaire (seuils
+    IOTA, cas par cas, défrichement) : ne jamais la remplacer par la surface 3D, qui sert à
+    quantifier l'habitat réellement concerné, chiffrer des travaux sur talus ou dimensionner
+    une compensation. Copie de la couche avec surf_proj_m2, surf_3d_m2 = surf_proj_m2 *
+    moyenne de 1/cos(pente) sur les pixels du polygone (pente de Horn, comme native:slope),
+    ratio_3d, couv_mnt (% de pixels avec donnée), mnt_res_m et pente_plaf (plafond de pente).
+    Le résultat dépend de la résolution du MNT : comparer des variantes avec le même MNT."""
+    layer = get_vector_layer(layer_id)
+    if geometry_kind(layer) != "polygon":
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} doit contenir des polygones.")
+    dem = _metric_raster(dem_layer_id)
+    items = list(iter_geometries(layer, feature_request(layer), dem.crs()))
+    if not items:
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{layer.name()} ne contient aucun polygone.")
+    cap = float(max_slope_deg)
+    stats, pixel = _surface_factors(dem, [g for _, g in items], cap)
+    da = distance_area(dem.crs())
+    fields = QgsFields(layer.fields())
+    added = []
+    for name, type_name in SURFACE_3D_FIELDS:
+        added.append(unique_field_name(name, fields.names()))
+        fields.append(make_field(added[-1], type_name))
+    memory = QgsMemoryProviderUtils.createMemoryLayer("surface_3d", fields, layer.wkbType(),
+                                                      layer.crs())
+    out, incomplete, small = [], 0, 0
+    total_proj = total_3d = 0.0
+    for (feature, geometry), (ratio, valid, cells) in zip(items, stats, strict=True):
+        projected = area_m2(da, geometry)
+        coverage = 100.0 * valid / cells if cells else 0.0
+        real = projected * ratio if ratio is not None and coverage >= min_coverage_pct else None
+        incomplete += real is None
+        small += 0 < cells < relief.MIN_PIXELS
+        total_proj += projected
+        total_3d += real or 0.0
+        copy = QgsFeature(fields)
+        copy.setGeometry(feature.geometry())
+        copy.setAttributes([
+            *feature.attributes(), round(projected, 2),
+            None if real is None else round(real, 2),
+            None if real is None else round(ratio, 4), round(coverage, 1), round(pixel, 3),
+            cap])
+        out.append(copy)
+    notes = add_to_memory(memory, out)
+
+    result = save_to_project(memory, output_name or f"{layer.name()}_surface_3d")
+    result.warnings.extend(notes)
+    result.data.update({
+        "reference": "surf_proj_m2 (surface projetée) : valeur réglementaire ; surf_3d_m2 en "
+                     "complément, ne la remplace jamais.",
+        "area_method": area_method(da), "dem": dem.name(), "pixel_size_m": round(pixel, 3),
+        "max_slope_deg": cap, "min_coverage_pct": float(min_coverage_pct),
+        "features": len(out), "fields": added,
+        "sum_proj_m2": round(total_proj, 2),
+        "sum_3d_m2": round(total_3d, 2) if not incomplete else None,
+        "incomplete": incomplete,
+    })
+    if incomplete:
+        result.warnings.append(
+            f"{incomplete} polygone(s) couvert(s) à moins de {min_coverage_pct:g} % par le MNT "
+            "(zones sensibles non diffusées, dalles manquantes, hors emprise) : surf_3d_m2 vide, "
+            "pas de total 3D. Compléter le MNT (RGE ALTI, Litto3D) ou baisser min_coverage_pct "
+            "en connaissance de cause.")
+    if small:
+        result.warnings.append(
+            f"{small} polygone(s) de moins de {relief.MIN_PIXELS} pixels : facteur 3D peu "
+            f"représentatif à {pixel:g} m de résolution (MNT plus fin conseillé).")
+    return result
 
 
 # Indices de native:zonalstatisticsfb (STATISTICS).

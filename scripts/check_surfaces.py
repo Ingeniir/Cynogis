@@ -1,4 +1,4 @@
-"""Tests de référence des surfaces (feuille de route 1.1 à 1.3, 1.5, 1.6), sans QGIS lancé.
+"""Tests de référence des surfaces (feuille de route 1.1 à 1.6), sans QGIS lancé.
 
 À exécuter avec le Python de QGIS (pytest n'y est pas installé) :
     "C:\\Program Files\\QGIS 4.2.1\\bin\\python-qgis.bat" scripts/check_surfaces.py
@@ -11,12 +11,24 @@ from __future__ import annotations
 
 import math
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugin"))
 
-from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsGeometry
+import numpy
+from osgeo import gdal, osr
+from qgis.core import (
+    NULL,
+    QgsApplication,
+    QgsCoordinateReferenceSystem,
+    QgsFeature,
+    QgsGeometry,
+    QgsProject,
+    QgsRasterLayer,
+    QgsVectorLayer,
+)
 
 APP = QgsApplication([], False)
 APP.initQgis()
@@ -31,6 +43,7 @@ from cynogis.tools.common import (  # noqa: E402
     distance_area,
     overlap_warning,
 )
+from cynogis.tools.terrain import _surface_factors, surface_3d  # noqa: E402
 
 PLANAR_TOL_M2 = 1e-6     # tolérance absolue, surface planaire
 ELLIPSOIDAL_TOL = 1e-5   # tolérance relative (0,001 %), surface ellipsoïdale
@@ -112,6 +125,76 @@ def check_dissolved() -> None:
     print("✓ Fusion par classe : chevauchement compté une fois, trou et multi-polygone respectés")
 
 
+DEM_NODATA = -9999.0
+
+
+def synthetic_dem(directory: Path, slope_deg: float, hole: bool = False) -> QgsRasterLayer:
+    """MNT synthétique EPSG:2975 : plan incliné vers l'est, pixels de 1 m, 200 sur 200 ;
+    hole : bande sans donnée (zone sensible non diffusée)."""
+    size, x0, y0 = 200, 338_000.0, 7_690_200.0
+    z = numpy.tile((numpy.arange(size) + 0.5) * math.tan(math.radians(slope_deg)) + 100.0,
+                   (size, 1))
+    if hole:
+        z[60:100, :] = DEM_NODATA
+    path = directory / f"mnt_{slope_deg:g}_{int(hole)}.tif"
+    dataset = gdal.GetDriverByName("GTiff").Create(str(path), size, size, 1, gdal.GDT_Float64)
+    dataset.SetGeoTransform((x0, 1.0, 0.0, y0, 0.0, -1.0))
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(2975)
+    dataset.SetProjection(srs.ExportToWkt())
+    dataset.GetRasterBand(1).SetNoDataValue(DEM_NODATA)
+    dataset.GetRasterBand(1).WriteArray(z)
+    dataset = None
+    layer = QgsRasterLayer(str(path), path.stem)
+    assert layer.isValid(), path
+    return layer
+
+
+def check_surface_3d() -> None:
+    """Feuille de route 1.4 : plan à 30° (1/cos 30°), plan horizontal (1), plafond de pente,
+    trou de données (couverture signalée, surface 3D non donnée), petit polygone."""
+    x, y = 338_050.0, 7_690_050.0  # carré de 100 m au centre du MNT (lignes et colonnes 50-150)
+    plot = QgsGeometry.fromWkt(f"POLYGON({square(x, y, 100)})")
+    tiny = QgsGeometry.fromWkt(f"POLYGON({square(x - 30.2, y + 10.2, 0.4)})")  # hors du carré
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        directory = Path(tmp)
+        for slope, cap, expected in ((30, 85, 1 / math.cos(math.radians(30))),
+                                     (0, 85, 1.0),
+                                     (88, 85, 1 / math.cos(math.radians(85)))):
+            (ratio, valid, cells), (small, _, one) = \
+                _surface_factors(synthetic_dem(directory, slope), [plot, tiny], cap)[0]
+            assert abs(ratio / expected - 1) < 1e-9 and valid == cells == 10_000, (slope, ratio)
+            assert one == 1 and abs(small / expected - 1) < 1e-9, (slope, small)
+        (ratio, valid, cells), _ = _surface_factors(synthetic_dem(directory, 30, True),
+                                                    [plot, tiny], 85)[0]
+        assert valid / cells < 0.95 and abs(ratio * math.cos(math.radians(30)) - 1) < 1e-9
+
+        # Outil complet : couche en sortie dans un projet temporaire
+        project = QgsProject.instance()
+        project.setPresetHomePath(tmp)
+        polygons = QgsVectorLayer("Polygon?crs=EPSG:2975", "parcelles", "memory")
+        features = []
+        for geometry in (plot, QgsGeometry.fromWkt(f"POLYGON({square(x, y + 5, 30)})")):
+            feature = QgsFeature(polygons.fields())
+            feature.setGeometry(geometry)
+            features.append(feature)
+        polygons.dataProvider().addFeatures(features)
+        dem = synthetic_dem(directory, 30, hole=True)
+        project.addMapLayers([polygons, dem])
+        result = surface_3d(polygons.id(), dem.id(), 85, 95, "test_surface_3d")
+        output = project.mapLayer(result.data["outputs"][0]["layer_id"])
+        rows = sorted((f["surf_proj_m2"], f["surf_3d_m2"], f["couv_mnt"])
+                      for f in output.getFeatures())
+        # 30 m sous le trou (lignes 115-145) : complet ; carré de 100 m : couverture < 95 %
+        assert rows[0][1] is not None and abs(rows[0][1] / rows[0][0] - 1.1547) < 1e-3, rows
+        assert rows[1][1] in (None, NULL) and rows[1][2] < 95, rows
+        assert result.data["incomplete"] == 1 and result.data["sum_3d_m2"] is None
+        assert any("moins de 95 %" in w for w in result.warnings), result.warnings
+        project.removeAllMapLayers()
+        project.setPresetHomePath("")
+    print("✓ Surface 3D : plan 30° = 1/cos 30°, horizontal = 1, plafond 85°, trou signalé")
+
+
 def check_geographic_rejected() -> None:
     crs = QgsCoordinateReferenceSystem("EPSG:4326")
     geometry = QgsGeometry.fromWkt("POLYGON((55.4 -20.9, 55.5 -20.9, 55.5 -20.8, 55.4 -20.9))")
@@ -129,5 +212,6 @@ if __name__ == "__main__":
     for site in SITES:
         check_site(*site)
     check_dissolved()
+    check_surface_3d()
     check_geographic_rejected()
     APP.exitQgis()
