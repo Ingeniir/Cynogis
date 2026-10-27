@@ -17,6 +17,7 @@ from ..core.errors import ErrorCode, ToolError
 from ..core.jobs import Fetch
 from ..core.registry import Level, tool
 from ..core.schema import Param
+from ..core.territory import NATURA2000_MESSAGE, is_natura2000_layer
 from ..core.webservices import (
     MAX_FEATURES_LIMIT,
     SERVICES_FILE,
@@ -74,6 +75,8 @@ def _layers(service: WebService, refresh: bool = False) -> Steps:
 
 def _layer(service: WebService, name: str) -> Steps:
     """Description (dict) d'une couche autorisée du service."""
+    if is_natura2000_layer(name):
+        raise ToolError(ErrorCode.PERMISSION_DENIED, NATURA2000_MESSAGE)
     if not service.allows(name):
         raise ToolError(ErrorCode.PERMISSION_DENIED, f"Couche {name} non autorisée pour "
                         f"{service.id}.", {"layers": list(service.layers)})

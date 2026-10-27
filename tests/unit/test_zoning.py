@@ -33,8 +33,10 @@ def test_par_territoire():
     assert "pn_coeur" in reunion and "pn_coeur" not in mayotte
     assert "pnm" in mayotte and "pnm" not in reunion
     assert [z.key for z in for_territory("reunion", ["ebc", "rnn"])] == ["ebc", "rnn"]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outre-mer"):
         for_territory("reunion", ["natura2000"])
+    with pytest.raises(ValueError, match="inconnus"):
+        for_territory("reunion", ["inexistant"])
 
 
 def test_statut():

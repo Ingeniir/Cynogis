@@ -1,8 +1,28 @@
 """Territoires de travail et détection automatique à partir d'une emprise WGS84. Python pur."""
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+
+from .naming import normalize
+
+NATURA2000_MESSAGE = ("Natura 2000 ne s'applique pas dans les départements d'outre-mer "
+                      "(La Réunion, Mayotte) : non proposé par Cynogis.")
+_NATURA2000 = re.compile(r"natura[\s_:-]*2000")
+# Noms et titres de couches : aussi les désignations SIC/pSIC/ZSC/ZPS.
+_NATURA2000_LAYER = re.compile(r"natura|(?<![a-z])(p?sic|zsc|zps)(?![a-z])"
+                               r"|importance communautaire|protection speciale")
+
+
+def mentions_natura2000(text: str) -> bool:
+    """Texte citant Natura 2000 (« Natura 2000 », « natura_2000 »…)."""
+    return bool(_NATURA2000.search(normalize(text)))
+
+
+def is_natura2000_layer(text: str) -> bool:
+    """Nom ou titre de couche d'un site Natura 2000 (« patrinat_zps:zps », « SIC »…)."""
+    return bool(_NATURA2000_LAYER.search(normalize(text)))
 
 
 @dataclass(frozen=True)

@@ -27,6 +27,7 @@ from ..core.naming import clean_name, unique_path
 from ..core.registry import Level, tool
 from ..core.report import build_html, build_markdown, normalize_table
 from ..core.schema import Param
+from ..core.territory import NATURA2000_MESSAGE, mentions_natura2000
 from ..ui.confirm import register_detail_provider
 from .common import (
     add_to_memory,
@@ -218,6 +219,8 @@ def write_report(title: str, sections: list, metadata: dict | None, format: str,
         content = builder(title, sections, metadata or {})
     except ValueError as exc:
         raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
+    if mentions_natura2000(content):
+        raise ToolError(ErrorCode.INVALID_PARAMS, f"{NATURA2000_MESSAGE} Retire-le de la note.")
     path, warnings = _output_path(output_name or title, REPORT_FORMATS[format])
     write_document(content, path)
     return ToolResult({"path": str(path), "format": format, "section_count": len(sections),
