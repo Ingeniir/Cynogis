@@ -80,6 +80,15 @@ def test_parse_wfs_and_search():
     assert [x["name"] for x in found["layers"]] == ["BDTOPO_V3:batiment"]
 
 
+def test_parse_hides_natura2000_layers():
+    natura = WFS.replace(b"</wfs:FeatureTypeList>", (
+        b"<wfs:FeatureType><wfs:Name>patrinat_zps:zps</wfs:Name></wfs:FeatureType>"
+        b"<wfs:FeatureType><wfs:Name>x:sites</wfs:Name><wfs:Title>Sites d'importance "
+        b"communautaire</wfs:Title></wfs:FeatureType></wfs:FeatureTypeList>"))
+    assert [x["name"] for x in parse_capabilities("wfs", natura)] == [
+        "BDTOPO_V3:batiment", "BDTOPO_V3:commune"]
+
+
 def test_search_respects_service_allowlist():
     layers = parse_capabilities("wfs", WFS)
     restricted = catalog(_user(layers=["BDTOPO_V3:commune"]))[0]["perso"]

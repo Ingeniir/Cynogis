@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from .referentials import referentials_directory
+from .territory import NATURA2000_MESSAGE, is_natura2000_layer
 
 BOTH = ("reunion", "mayotte")
 
@@ -140,6 +141,8 @@ BY_KEY = {item.key: item for item in ZONINGS}
 def for_territory(territory: str | None, keys: list[str] | None = None) -> list[Zoning]:
     """Zonages à examiner : ceux demandés (keys), sinon tous ceux du territoire."""
     if keys:
+        if any(is_natura2000_layer(k) for k in keys):
+            raise ValueError(NATURA2000_MESSAGE)
         unknown = [k for k in keys if k not in BY_KEY]
         if unknown:
             raise ValueError(f"Zonages inconnus : {', '.join(unknown)} "

@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from .naming import normalize
+from .territory import is_natura2000_layer
 
 SERVICES_FILE = Path.home() / ".cynogis" / "web_services.json"
 KINDS = ("wms", "wfs")
@@ -211,8 +212,14 @@ def _wms_layers(elem: ET.Element, inherited: list[str], out: list[dict[str, Any]
 
 
 def parse_capabilities(kind: str, content: bytes) -> list[dict[str, Any]]:
-    """Couches annoncées par un GetCapabilities WMS (1.1/1.3) ou WFS (1.x/2.0) :
-    nom, titre, résumé, SCR proposés. ValueError si le serveur renvoie une exception."""
+    """Couches annoncées (hors Natura 2000, sans objet outre-mer) par un GetCapabilities
+    WMS (1.1/1.3) ou WFS (1.x/2.0) : nom, titre, résumé, SCR proposés. ValueError si le
+    serveur renvoie une exception."""
+    return [layer for layer in _parse_capabilities(kind, content)
+            if not is_natura2000_layer(f"{layer['name']} {layer['title'] or ''}")]
+
+
+def _parse_capabilities(kind: str, content: bytes) -> list[dict[str, Any]]:
     try:
         root = ET.fromstring(content)
     except ET.ParseError as exc:

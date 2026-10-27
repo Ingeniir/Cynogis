@@ -25,6 +25,7 @@ INSTRUCTIONS = """Tu pilotes QGIS pour un bureau d'études travaillant à La Ré
 (SCR de référence EPSG:2975, RGR92 / UTM 40S) et à Mayotte (EPSG:4471, RGM04 / UTM 38S).
 Commence toujours par get_project_info puis list_layers. Désigne les couches par leur layer_id.
 Lis les 'warnings' de chaque réponse et tiens-en compte (SCR, encodage…).
+Natura 2000 ne s'applique pas dans les départements d'outre-mer : ne le propose jamais.
 Le niveau de chaque outil est indiqué dans sa description : les modifications de données
 sont validées par un humain dans QGIS ; en cas de refus, ne réessaie pas sans lui demander."""
 
