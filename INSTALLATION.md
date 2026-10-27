@@ -61,7 +61,7 @@ Contenu attendu du partage :
    - URL : `file:///SERVEUR/Cynogis/plugins/plugins.xml`
 4. Onglet **Toutes** → rechercher **Cynogis Réunion-Mayotte** → **Installer**.
 
-Le bouton **« Serveur GeoMCP »** apparaît dans la barre d'outils.
+Le bouton **« Serveur Cynogis »** apparaît dans la barre d'outils.
 
 > Les mises à jour sont ensuite proposées automatiquement par QGIS (onglet *Évolutives*).
 >
@@ -163,7 +163,7 @@ command = 'C:\Users\PRENOM.NOM\.local\bin\cynogis-server.exe'
 
 1. Ouvrir QGIS et un projet (de préférence **enregistré** : les résultats iront dans
    `<dossier du projet>\mcp_outputs\`).
-2. Cliquer sur **« Serveur GeoMCP »** (le bouton reste enfoncé).
+2. Cliquer sur **« Serveur Cynogis »** (le bouton reste enfoncé).
 3. Dans l'assistant IA, écrire :
    > Lance ping sur Cynogis, puis donne-moi les infos du projet et la liste des couches.
 4. L'IA doit répondre avec les versions de QGIS et du plugin, le SCR et les couches.
@@ -172,7 +172,7 @@ command = 'C:\Users\PRENOM.NOM\.local\bin\cynogis-server.exe'
 
 ## 7. Utilisation au quotidien
 
-- **Avant chaque session** : ouvrir QGIS → ouvrir le projet → cliquer sur **« Serveur GeoMCP »**.
+- **Avant chaque session** : ouvrir QGIS → ouvrir le projet → cliquer sur **« Serveur Cynogis »**.
 - Les résultats apparaissent dans le groupe **« Cynogis »** du projet et dans `mcp_outputs\`,
   sans jamais écraser un fichier existant.
 - Les actions sensibles (suppression, enregistrement sur disque, écrasement du projet, code PyQGIS)
@@ -186,7 +186,7 @@ command = 'C:\Users\PRENOM.NOM\.local\bin\cynogis-server.exe'
 
 | Symptôme | Cause probable | Solution |
 |---|---|---|
-| `QGIS_UNAVAILABLE` | pont non démarré | cliquer sur « Serveur GeoMCP » dans QGIS |
+| `QGIS_UNAVAILABLE` | pont non démarré | cliquer sur « Serveur Cynogis » dans QGIS |
 | L'IA ne voit aucun outil Cynogis | client mal configuré | vérifier le chemin de `cynogis-server.exe` (étape 5), redémarrer le client |
 | `uv` ou `cynogis-server` introuvable | PowerShell non rouvert | fermer / rouvrir PowerShell ; vérifier `%USERPROFILE%\.local\bin` |
 | Le plugin n'apparaît pas dans QGIS | extensions expérimentales masquées | cocher « Afficher les extensions expérimentales » (étape 2) |

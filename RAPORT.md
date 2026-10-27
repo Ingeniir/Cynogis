@@ -43,7 +43,7 @@ plugin/cynogis/                   ← plugin QGIS (Python 3.12 de QGIS, thread p
   tools/tasks.py     exécuteur des étapes longues dans des QgsTask
 ```
 
-**Démarrage** : le bouton « Serveur GeoMCP » de la barre d'outils lance le pont. Le plugin écrit
+**Démarrage** : le bouton « Serveur Cynogis » de la barre d'outils lance le pont. Le plugin écrit
 alors `~/.cynogis/connection.json` (`host`, `port`, `token`, `pid`). Le serveur MCP relit ce
 fichier à chaque appel (remplacement possible par `CYNOGIS_CONNECTION_FILE`). Pont arrêté →
 `QGIS_UNAVAILABLE`.

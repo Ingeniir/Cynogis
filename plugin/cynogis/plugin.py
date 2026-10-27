@@ -80,9 +80,9 @@ class CynogisPlugin:
     # --- Cycle de vie QGIS --------------------------------------------------
     def initGui(self) -> None:
         self._action = QAction(QIcon(str(PLUGIN_DIR / "icons" / "icon.svg")),
-                               "Serveur GeoMCP", self.iface.mainWindow())
+                               "Serveur Cynogis", self.iface.mainWindow())
         self._action.setCheckable(True)
-        self._action.setToolTip("Démarrer / arrêter le serveur GeoMCP")
+        self._action.setToolTip("Démarrer / arrêter le serveur Cynogis")
         self._action.toggled.connect(self._on_toggled)
         self.iface.addToolBarIcon(self._action)
         self.iface.addPluginToMenu(MENU, self._action)
@@ -155,7 +155,7 @@ class CynogisPlugin:
 
     def _notify(self, message: str, level: Qgis.MessageLevel) -> None:
         logger.info(message)
-        self.iface.messageBar().pushMessage("GeoMCP", message, level=level, duration=5)
+        self.iface.messageBar().pushMessage("Cynogis", message, level=level, duration=5)
 
     def _load_palettes(self) -> None:
         """Charge les palettes enregistrées par l'utilisateur, sans bloquer au besoin."""
