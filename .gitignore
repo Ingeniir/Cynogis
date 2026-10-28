@@ -65,3 +65,9 @@ graphify-out/graph.html
 # Sauvegarde créée par « graphify install »
 .claude/settings.json.graphify-bak
 .claude/settings.local.json
+
+# =========================================================
+# IDE et environnement local du développeur
+# =========================================================
+.idea/
+.qgis_env.json
