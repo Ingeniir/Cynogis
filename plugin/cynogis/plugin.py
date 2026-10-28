@@ -39,11 +39,11 @@ from .tools import (
     stakes,
     styling,
     system,
+    tabular,
     taxref,
     terrain,
     webservices,
     zoning,
-    tabular,
 )
 from .tools.tasks import ProcessingExecutor
 from .ui.confirm import make_confirmer
