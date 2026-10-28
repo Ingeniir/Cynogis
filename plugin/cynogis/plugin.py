@@ -43,6 +43,7 @@ from .tools import (
     terrain,
     webservices,
     zoning,
+    tabular,
 )
 from .tools.tasks import ProcessingExecutor
 from .ui.confirm import make_confirmer
@@ -50,7 +51,7 @@ from .ui.confirm import make_confirmer
 PLUGIN_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path.home() / ".cynogis"
 MENU = "&Cynogis"
-TOOL_MODULES = (system, layers, features, measures, overlaps, geoprocessing, algorithms,
+TOOL_MODULES = (system, layers, features, measures, tabular, overlaps, geoprocessing, algorithms,
                 editing, shapefiles, coefficients, landscape, terrain, styling, export,
                 proximity, referentials, webservices, fielddata, taxref, habref,
                 stakes, density, sampling, atlas, zoning,
