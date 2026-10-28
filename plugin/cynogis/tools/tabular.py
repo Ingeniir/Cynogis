@@ -15,12 +15,12 @@ from .common import (
     area_method,
     distance_area,
     feature_request,
+    field_type_name,
     geometry_kind,
     get_vector_layer,
     length_m,
     require_field,
     to_json_value,
-    field_type_name,
 )
 from .features import FILTER_HELP
 
@@ -204,10 +204,10 @@ def correlation_matrix(layer_id: str, fields: list[str], method: str,
     data: dict[str, Any] = {"method": method, "fields": names, "matrix": matrix,
                             "pairs": pairs}
     if len(names) == 2:
-        both = [(x, y) for x, y in zip(columns[names[0]], columns[names[1]])
+        both = [(x, y) for x, y in zip(columns[names[0]], columns[names[1]], strict=True)
                 if x is not None and y is not None]
         if both:
-            xs, ys = zip(*both)
+            xs, ys = zip(*both, strict=True)
             data["regression"] = {"x": names[0], "y": names[1], **(stats.linear_fit(xs, ys)
                                                                    or {})}
     return ToolResult(data, ["Corrélation ≠ causalité ; p-values approchées (Fisher)."])

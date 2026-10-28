@@ -1,8 +1,15 @@
 import pytest
 
 from cynogis.core.privacy import is_sensitive_field
-from cynogis.core.stats import (correlate, correlation_pairs, describe_categorical,
-                                describe_full, linear_fit, ranks, weighted_stats)
+from cynogis.core.stats import (
+    correlate,
+    correlation_pairs,
+    describe_categorical,
+    describe_full,
+    linear_fit,
+    ranks,
+    weighted_stats,
+)
 
 
 def test_describe_full_shape():

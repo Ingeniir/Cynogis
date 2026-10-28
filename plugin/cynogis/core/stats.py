@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Hashable, Sequence
 from collections import Counter
+from collections.abc import Hashable, Mapping, Sequence
 from typing import Any
 
 NDIGITS = 6
@@ -62,7 +62,7 @@ def _t95(df: int) -> float:
     return _T95[max(k for k in _T95 if k <= df)]
 
 def percentile(sorted_values: Sequence[float], p: float) -> float:
-    """Centile par interpolation linéaire (même méthode que quantiles(..., 'inclusive')."""
+    """Centile par interpolation linéaire (même méthode que quantiles(..., 'inclusive'))."""
     n = len(sorted_values)
     if n == 1:
         return sorted_values[0]
@@ -83,7 +83,7 @@ def skewness(values: Sequence[float], mean: float) -> float | None:
     return m3 / m2 ** 1.5 * math.sqrt(n * (n - 1)) / (n - 2)
 
 def kurtosis(values: Sequence[float], mean: float) -> float | None:
-    """Applatissement en excès corrigé (G2) : 0 = loi normale."""
+    """Aplatissement en excès corrigé (G2) : 0 = loi normale."""
     n = len(values)
     if n < 4:
         return None
@@ -110,8 +110,9 @@ def interpret_shape(skew: float | None, kurt: float | None) -> str | None:
         text += ", distribution aplatie"
     return text
 
-def describe_full(values: Sequence[float], percentiles: Sequence[float] = PERCENTILES) -> dict[str, Any]:
-    """describe() + variance, étendue, SEM, IC 95 %, asymétrie, applatissement, centiles,
+def describe_full(values: Sequence[float],
+                  percentiles: Sequence[float] = PERCENTILES) -> dict[str, Any]:
+    """describe() + variance, étendue, SEM, IC 95 %, asymétrie, aplatissement, centiles,
     modes, valeurs aberrantes (Tukey 1,5 x IQR et |z| > 3)."""
     base = describe(values)
     n = len(values)
@@ -145,7 +146,11 @@ def describe_full(values: Sequence[float], percentiles: Sequence[float] = PERCEN
 
     return {
         **base,
-        "variance": _r(skew),
+        "variance": _r(var),
+        "range": _r(data[-1] - data[0]),
+        "sem": _r(sem),
+        "ci95_mean": None if half is None else [_r(mean - half), _r(mean + half)],
+        "skewness": _r(skew),
         "kurtosis": _r(kurt),
         "shape": interpret_shape(skew, kurt),
         "percentiles": {f"p{p:g}": _r(percentile(data, p)) for p in percentiles},
@@ -160,10 +165,11 @@ def describe_full(values: Sequence[float], percentiles: Sequence[float] = PERCEN
         "negatives": sum(1 for v in data if v < 0),
     }
 
-def weighted_stats(values: Sequence[float | None], weights: Sequence[float | None]) -> dict[str, Any] | None:
+def weighted_stats(values: Sequence[float | None],
+                   weights: Sequence[float | None]) -> dict[str, Any] | None:
     """Moyenne, écart-type et médiane pondérés (ex. pondération par la surface)."""
     pairs = sorted(
-        (v, w) for v, w in zip(values, weights)
+        (v, w) for v, w in zip(values, weights, strict=True)
         if v is not None and w is not None and w > 0
     )
     total = math.fsum(w for _, w in pairs)
@@ -186,7 +192,7 @@ def weighted_stats(values: Sequence[float | None], weights: Sequence[float | Non
         "median": _r(median),
     }
 
-def describe_categorial(values: Sequence[Hashable], top: int = 10) -> dict[str, Any]:
+def describe_categorical(values: Sequence[Hashable], top: int = 10) -> dict[str, Any]:
     """Mode effectifs et pourcentages, entropie de Shannon et équitabilité."""
     counter = Counter(values)
     n = sum(counter.values())
@@ -246,7 +252,7 @@ def pearson(x: Sequence[float], y: Sequence[float]) -> float | None:
     syy = math.fsum((b - my) ** 2 for b in y)
     if sxx == 0 or syy == 0:
         return None
-    sxy = math.fsum((a - mx) * (b - my) for a, b in zip(x, y))
+    sxy = math.fsum((a - mx) * (b - my) for a, b in zip(x, y, strict=True))
 
     return max(-1.0, min(1.0, sxy / math.sqrt(sxx * syy)))
 
@@ -273,10 +279,7 @@ def strength(r: float | None) -> str | None:
     return f"{label}, {'positive' if r > 0 else 'négative'}" if a >= 0.1 else label
 
 def correlate(x: Sequence[float], y: Sequence[float], method: str = "pearson") -> dict[str, Any]:
-    if method == "spearman":
-        r = pearson(ranks(x), ranks(y))
-    else:
-        r = pearson(x, y)
+    r = pearson(ranks(x), ranks(y)) if method == "spearman" else pearson(x, y)
     p = correlation_pvalue(r, len(x))
 
     return {
@@ -297,7 +300,7 @@ def linear_fit(x: Sequence[float], y: Sequence[float]) -> dict[str, Any] | None:
     sxx = math.fsum((a - mx) ** 2 for a in x)
     if sxx == 0:
         return None
-    slope = math.fsum((a - mx) * (b - my) for a, b in zip(x, y)) / sxx
+    slope = math.fsum((a - mx) * (b - my) for a, b in zip(x, y, strict=True)) / sxx
     r = pearson(x, y)
 
     return {
@@ -306,7 +309,8 @@ def linear_fit(x: Sequence[float], y: Sequence[float]) -> dict[str, Any] | None:
         "r2": _r(r * r) if r is not None else None,
     }
 
-def correlation_pairs(columns: dict[str, Sequence[float | None]], method: str = "pearson") -> list[dict[str, Any]]:
+def correlation_pairs(columns: Mapping[str, Sequence[float | None]],
+                      method: str = "pearson") -> list[dict[str, Any]]:
     """Toutes les paires de colonnes, suppression par paire des valeurs manquantes,
     triées par |r| décroissant."""
     names = list(columns)
@@ -314,19 +318,16 @@ def correlation_pairs(columns: dict[str, Sequence[float | None]], method: str = 
     for i, a in enumerate(names):
         for b in names[i + 1:]:
             pairs = [
-                (u, v) for u, v in zip(columns[a], columns[b])
+                (u, v) for u, v in zip(columns[a], columns[b], strict=True)
                 if u is not None and v is not None
             ]
             if len(pairs) < 3:
                 continue
-            x, y = zip(*pairs)
+            x, y = zip(*pairs, strict=True)
             rows.append({
                 "x": a,
                 "y": b,
                 **correlate(x, y, method)
             })
-            rows.sort(
-                key=lambda r: -abs(r["r"] if r["r"] is not None else 0)
-            )
-
-            return rows
+    rows.sort(key=lambda r: -abs(r["r"] if r["r"] is not None else 0))
+    return rows
