@@ -22,3 +22,8 @@ MASK = "***"
 def mask_sensitive(attributes: dict) -> dict:
     """Copie des attributs où la valeur de chaque champ sensible est remplacée par MASK."""
     return {k: MASK if is_sensitive_field(k) else v for k, v in attributes.items()}
+
+
+def sensitive_fields(names) -> list[str]:
+    """Champs sensibles parmi names (ordre conservé, sans doublon)."""
+    return [n for n in dict.fromkeys(names) if is_sensitive_field(n)]
