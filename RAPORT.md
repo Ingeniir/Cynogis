@@ -5,8 +5,8 @@
 > outils, les règles à respecter et les pièges connus**. Les consignes courtes de travail sont
 > dans `CLAUDE.md` ; ce rapport les explique et les complète. En cas de doute, le code fait foi.
 >
-> État au 19/10/2026 (après la PR #23) : **101 outils exposés à l'IA** + 4 outils internes,
-> 28 modules d'outils, **385 tests unitaires** au vert.
+> État au 01/11/2026 (après la PR #36) : **105 outils exposés à l'IA** + 4 outils internes,
+> 29 modules d'outils, **439 tests unitaires** au vert.
 
 ---
 
@@ -120,8 +120,9 @@ plugin/cynogis/
   core/                LOGIQUE PURE, testée sans QGIS (aucun import qgis, sauf log.py)
   tools/               OUTILS PyQGIS (un module = un domaine)
 server/src/cynogis_server/   serveur MCP générique (app.py, client.py, __main__.py)
-scripts/               dev_setup.py, ping_qgis.py, qgis_env_snippet.py
-tests/unit/            34 fichiers pytest de core/ et bridge/protocol.py (sans QGIS)
+scripts/               dev_setup.py, ping_qgis.py, qgis_env_snippet.py, check_surfaces.py, build_plugin.py
+tests/unit/            36 fichiers pytest de core/ et bridge/protocol.py (sans QGIS)
+docs/ROADMAP.md        feuille de route (phases 0 à n : outillage, fiabilité des surfaces…)
 ```
 
 ### `core/` — logique métier pure (testée)
@@ -138,7 +139,8 @@ tests/unit/            34 fichiers pytest de core/ et bridge/protocol.py (sans Q
 | `log.py` | redirection du logger `cynogis` vers le journal QGIS (seul module core qui importe qgis) |
 | `naming.py` | `clean_name`, `unique_path` (sorties jamais écrasées), `normalize`, `to_ascii` |
 | `territory.py` | Réunion / Mayotte, `detect_territory(bbox_wgs84)` → `Territory` (`.code`, `.epsg`) |
-| `units.py`, `stats.py` | conversions d'unités ; statistiques descriptives, `to_float` |
+| `units.py`, `stats.py` | conversions d'unités ; statistiques descriptives (`describe`, `describe_full` : IC 95 %, centiles, asymétrie, aplatissement, aberrantes ; `describe_categorical`, `weighted_stats`), corrélations (`correlate`, `correlation_pairs`, `linear_fit`), `to_float` |
+| `privacy.py` | `is_sensitive_field` : champs nominatifs (MAJIC), coordonnées personnelles, espèces sensibles — leurs valeurs ne sont jamais envoyées au modèle |
 | `algorithms.py` | **liste blanche** `ALGORITHMS` de `run_algorithm` + recherche sans accents |
 | `codecheck.py` | repérage des appels sensibles du code soumis à `execute_pyqgis` (indicatif) |
 | `resolve.py` | stratégies de résolution des chevauchements |
@@ -156,7 +158,7 @@ tests/unit/            34 fichiers pytest de core/ et bridge/protocol.py (sans Q
 | `proximity.py` | k plus proches voisins, matrice de distances, anneau ordonné de points |
 | `referentials.py` | sources OCS GE / CIRAD sur disque (`~/.cynogis/referentials/` ou `CYNOGIS_REFERENTIALS_DIR`), règles → nomenclature |
 | `webservices.py` | catalogue WMS/WFS (intégré + `~/.cynogis/web_services.json`), GetCapabilities |
-| `zoning.py` | zonages réglementaires et d'inventaire (Parc national, réserves, ZNIEFF, Ramsar…) |
+| `zoning.py` | zonages réglementaires et d'inventaire (Parc national, réserves, ZNIEFF, Ramsar…), provenance par île, qualification du pré-diagnostic (Natura 2000 exclu : non applicable dans les DOM) |
 | `fielddata.py` | relevés de terrain (GPX, CSV, KoboToolbox, QField) → schéma standard |
 | `taxref.py` | rattachement des taxons à TAXREF et à la BDC Statuts (INPN) |
 | `habref.py` | rattachement des habitats aux typologies locales HABREF |
@@ -190,15 +192,23 @@ tests/unit/            34 fichiers pytest de core/ et bridge/protocol.py (sans Q
    consultable par `get_audit_log`.
 6. **Journal d'édition** (`core/edits.py::JOURNAL`) : ce que l'IA a modifié depuis le dernier
    enregistrement, affiché dans la confirmation de `request_commit`.
+7. **Confidentialité** (`core/privacy.py`) : les valeurs des champs nominatifs (cadastre MAJIC,
+   noms, adresses) et des données d'espèces sensibles sont masquées avant envoi au modèle :
+   `***` dans `get_features` (+ warning), effectifs seuls dans `get_field_values` et
+   `profile_table`, champs exclus de `correlation_matrix`, et toute `filter_expression` qui y fait
+   référence est refusée (sinon les effectifs révéleraient les valeurs). Le pont QGIS est local,
+   mais les résultats des outils sont transmis au fournisseur d'IA choisi.
+8. **Surfaces** : aucune surface en SCR géographique (`area_m2` lève `CRS_GEOGRAPHIC`).
 
 ---
 
-## 5. Catalogue des outils (101 + 4 internes)
+## 5. Catalogue des outils (105 + 4 internes)
 
 Niveau : R = READ, C = CREATE, M = MODIFY, **D = DESTROY**. Toutes les couches sont désignées
 par leur **`layer_id`** (renvoyé par `list_layers`). Toute sortie `C` va dans `mcp_outputs/`
 et dans le groupe « Cynogis » du projet. Les surfaces et distances sont **ellipsoïdales** (m², m)
-sauf mention contraire.
+sauf mention contraire ; toute sortie contenant des surfaces porte `area_method`. Les surfaces
+par classe sont fusionnées avant somme (un recouvrement compté une fois, avec avertissement).
 
 ### 5.1 Système et couches
 
@@ -215,12 +225,14 @@ sauf mention contraire.
 
 | Outil | Niv. | Fonctionnement |
 |---|---|---|
-| `get_features` | R | lit fid, attributs et géométrie (WKT/GeoJSON), paginé (`limit`/`offset`, `has_more`) |
-| `get_field_values` | R | valeurs distinctes d'un champ avec effectifs et nombre de nulls |
+| `get_features` | R | lit fid, attributs et géométrie (WKT/GeoJSON), paginé (`limit`/`offset`, `has_more`) ; champs sensibles masqués (`***`) |
+| `get_field_values` | R | valeurs distinctes d'un champ avec effectifs et nombre de nulls ; champ sensible : effectifs seuls |
 | `check_geometries` | R | contrôle GEOS : nulles, vides, invalides, multi-parties ; échantillon localisé |
 | `select_features` | R | surligne des entités dans QGIS (expression ou fid), zoom optionnel |
 | `measure` | R | surfaces, périmètres, longueurs : total, stats (moyenne, médiane, quartiles, CV), par groupe avec parts (%) |
 | `descriptive_stats` | R | stats d'un champ ou d'une expression, globales et par groupe |
+| `profile_table` | R | profil complet de la table en un appel : numériques (IC 95 %, centiles, asymétrie, aberrantes…), texte/date/booléen (mode, effectifs, entropie), corrélations les plus fortes, pondération par surface optionnelle ; champs sensibles masqués |
+| `correlation_matrix` | R | matrice de corrélation : r, R², n, p-value approchée, force ; régression linéaire si deux champs |
 | `shape_indices` | R | compacité de Gravelius, allongement, CV des surfaces, couverture et densité vs couche de référence |
 | `habitat_area_stats` | C | tableau des habitats de l'aire d'étude : nb, surface (ha), parts (%), surface moyenne, périmètre |
 
@@ -296,6 +308,7 @@ sauf mention contraire.
 | `classify_slope` | C | reclassement en 5 classes, polygonisation optionnelle |
 | `elevation_sample` | C | altitude, pente, exposition échantillonnées sur le MNT (points ou polygones) |
 | `zonal_statistics` | C | statistiques d'un raster dans chaque polygone |
+| `surface_3d` | R | surface réelle (3D) d'après un MNT (`surf_3d_m2`, `ratio_3d`, `couv_mnt`, `mnt_res_m`) **en complément** de `surf_proj_m2`, qui reste la référence réglementaire |
 | `list_reference_sources` | R | référentiels OCS GE / CIRAD connus pour le territoire et leur présence sur disque |
 | `clip_reference_landcover` | C | découpe un référentiel sur la zone et le traduit dans la nomenclature (option `overlay_sources`) |
 
@@ -320,6 +333,7 @@ sauf mention contraire.
 | `impact_quantification` | C | surfaces d'habitat détruites (direct) et dégradées (anneaux indirects), par enjeu |
 | `erc_variant_compare` | C | démarche ERC « éviter » : compare les variantes d'emprise et leurs impacts résiduels |
 | `regulatory_zoning_intersect` | C | croise le projet avec les zonages réglementaires et d'inventaire |
+| `regulatory_prescan` | C | pré-diagnostic réglementaire en un appel : chaque zonage qualifié (intersecte, proche, absent, non vérifié), catégorie juridique, niveau de contrainte indicatif ; couche + XLSX + note sourcée et datée (déterministe, non rédigé par le LLM) |
 | `fetch_wfs_layer` | C | télécharge les zonages officiels (INPN, ONF, GPU) sur une emprise ou toute l'île |
 
 ### 5.8 Services web
@@ -361,6 +375,9 @@ sauf mention contraire.
   `taxon_status_join` → `habitat_typology_join` → `stake_scoring` →
   `impact_quantification` / `erc_variant_compare` → `regulatory_zoning_intersect` →
   `export_atlas_pdf`.
+- **Pré-diagnostic réglementaire** : `get_project_info` → `regulatory_prescan` (+ `surface_3d`
+  en complément si pente forte, jamais à la place de la surface projetée).
+- **Table attributaire** : `profile_table` → `correlation_matrix` sur les paires utiles.
 - **Édition** : `add_features` / `update_geometry`… → `get_pending_edits` → `request_commit`
   (confirmation) ou `rollback_edits`.
 - **Pente** : `derive_terrain` → `classify_slope` → `overlay` avec les parcelles.
@@ -413,7 +430,11 @@ def mon_outil(layer_id: str, distance: float, output_name: str | None):
 | couche / champ | `get_vector_layer`, `get_raster_layer`, `get_layer`, `require_field` (insensible à la casse) |
 | requête | `feature_request(layer, filter_expression, attributes, geometry)`, `prepare_expression` |
 | géométries reprojetées | `iter_geometries(layer, request, crs)` |
-| mesures | `distance_area(crs)` puis `area_m2`, `length_m`, `perimeter_m` (ellipsoïde du SCR, sinon du projet, sinon GRS80 ; `area_m2` répare les polygones invalides avant mesure) |
+| mesures | `distance_area(crs)` puis `area_m2`, `length_m`, `perimeter_m` (ellipsoïde du SCR, sinon du projet, sinon GRS80 ; `area_m2` refuse les SCR géographiques et répare les polygones invalides avant mesure, en le signalant) |
+| méthode de surface | `"area_method": area_method(da)` dans toute donnée renvoyée contenant des surfaces |
+| surfaces par classe | `dissolved_areas(da, (clé, géométrie)…)` (fusion avant somme) + `overlap_warning(...)` dans les warnings |
+| avertissement depuis un helper | `core/jobs.py::note("{n} …")` : ajouté aux `warnings` de l'appel ou du job en cours |
+| champ sensible | `core/privacy.py::is_sensitive_field(nom)` : ne jamais renvoyer ses valeurs |
 | type de géométrie | `geometry_kind(layer)` → `"point"`, `"line"`, `"polygon"`, `"none"` |
 | valeurs QGIS → JSON | `to_json_value`, `group_key` |
 | SCR | `crs_from_text("2975" \| "EPSG:2975")`, `extent_wgs84`, `rect_to_list`, `territory_info` |
@@ -446,7 +467,14 @@ def mon_outil(layer_id: str, distance: float, output_name: str | None):
 
 - **Territoires** (`core/territory.py`) : Réunion `EPSG:2975`, Mayotte `EPSG:4471`, détectés
   depuis l'emprise WGS84. En UTM, la surface planaire est sous-estimée d'environ 0,08 % à Mayotte
-  et de 0 à 0,045 % à La Réunion : la mesure ellipsoïdale est la référence.
+  et de 0 à 0,045 % à La Réunion : la mesure ellipsoïdale est la référence. Jamais de surface
+  en EPSG:4326. Surfaces de référence vérifiées par `scripts/check_surfaces.py`.
+- **Surface 3D** (`surface_3d`) : complément seulement ; la surface projetée reste la référence
+  des seuils (IOTA, cas par cas, défrichement). Toujours afficher les deux, étiquetées, avec la
+  résolution du MNT.
+- **Natura 2000** : ne s'applique pas dans les DOM, exclu des zonages et jamais proposé.
+- **Pré-diagnostic** : déterministe (intersections réelles), jamais rédigé par le LLM ; les seuils
+  réglementaires viennent de la configuration, jamais en dur.
 - **Nomenclature des paysages** (`core/landscape.py`) : fermée, 5 grands postes, classes communes
   ou propres à un territoire (tamarinaie, coulée de lave ; padza, mangrove).
 - **Coefficients** : pondérations de référence — **pas un texte réglementaire**, le PLU prime.
@@ -462,9 +490,13 @@ def mon_outil(layer_id: str, distance: float, output_name: str | None):
 ## 8. Tests, qualité, commandes
 
 ```bash
-.venv/Scripts/python -m pytest                    # 385 tests unitaires (sans QGIS)
+.venv/Scripts/python -m pytest                    # 439 tests unitaires (sans QGIS)
 .venv/Scripts/python -m ruff check plugin server scripts tests
 .venv/Scripts/python scripts/ping_qgis.py         # teste le pont (QGIS + pont démarrés)
+"C:/Program Files/QGIS 4.2.1/bin/python-qgis.bat" scripts/check_surfaces.py  # surfaces de référence
+.venv/Scripts/python scripts/build_plugin.py      # ZIP du plugin (sans graphify-out/, CLAUDE.md…) ;
+                                                  # --bump aligne la version (metadata.txt, __init__.py
+                                                  # plugin et serveur, pyproject.toml)
 npx @modelcontextprotocol/inspector .venv/Scripts/python -m cynogis_server
 .venv/Scripts/python scripts/dev_setup.py         # .pth PyQGIS + jonction du plugin dans le profil QGIS
 ```
@@ -483,15 +515,20 @@ npx @modelcontextprotocol/inspector .venv/Scripts/python -m cynogis_server
 
 ## 9. État du projet et points d'attention
 
-- **Validé** : logique `core/` (385 tests), cohérence statique des outils, traitements en tâche
+- **Validé** : logique `core/` (442 tests), cohérence statique des outils, traitements en tâche
   de fond (jobs, `QgsTask`, pauses, téléchargements WFS/WMS).
-- **Historique récent** : outils d'audit de projet, `execute_pyqgis` avec confirmation, nouveaux
-  référentiels, tâches de fond, mesure ellipsoïdale corrigée (ellipsoïde du SCR, polygones
-  invalides réparés avant calcul de surface).
+- **Historique récent** (PR #24 à #37, suivi dans `docs/ROADMAP.md`) : pré-diagnostic
+  réglementaire (`regulatory_prescan`), provenance des zonages par île, script de build ZIP,
+  Graphify + `CLAUDE.md`, fiabilité des surfaces (surfaces de référence, refus des SCR
+  géographiques, `area_method`, géométries invalides signalées, fusion par classe avant somme),
+  `surface_3d`, exclusion de Natura 2000, renommage GeoMCP → Cynogis, profil statistique des
+  tables (`profile_table`, `correlation_matrix`), masquage des champs sensibles dans
+  `get_features` / `get_field_values` et refus des `filter_expression` qui les visent.
 - **À valider dans QGIS** : édition de géométrie (split, merge, move, snap), style (catégories
   numériques, `undo_style`), export XLSX/ODS, `classify_slope` vectorisé, `extract_ravines` à
   largeur variable, `classify_landscape` avec `merge_adjacent`, atlas PDF, outils écologie
-  (ERC, impacts, enjeux) sur données réelles.
+  (ERC, impacts, enjeux) sur données réelles, `regulatory_prescan`, `surface_3d`,
+  `profile_table` sur grandes tables.
 - **Limites connues** :
   - `JOURNAL` (édition) et l'historique de style sont en mémoire : perdus au rechargement ;
   - un seul job à la fois ; les outils non-`READ` reçoivent `BUSY` pendant un job ;
@@ -499,4 +536,6 @@ npx @modelcontextprotocol/inspector .venv/Scripts/python -m cynogis_server
     de géométrie (les outils le signalent) ;
   - `core/codecheck.py` n'est qu'un signalement : la vraie protection d'`execute_pyqgis` est la
     relecture humaine.
-- **Incohérence à corriger** : `pyproject.toml`, parenthèse non fermée dans `description`.
+- **Version** : une seule version (0.1.0, tag `v0.1.0`) dans `metadata.txt`, les deux
+  `__init__.py` et `pyproject.toml` ; `build_plugin.py --bump` les aligne et
+  `tests/unit/test_version.py` vérifie leur cohérence.

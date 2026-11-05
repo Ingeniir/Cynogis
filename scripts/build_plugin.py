@@ -25,6 +25,14 @@ METADATA = PLUGIN_SRC / "metadata.txt"
 DIST = ROOT / "dist"
 EXCLUDED_DIRS = {"__pycache__", ".pytest_cache", ".ruff_cache"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
+# Tous les endroits qui portent la version : --bump les aligne (motif, remplacement).
+VERSION_FILES = {
+    METADATA: (r"(?m)^version=.*$", "version={}"),
+    PLUGIN_SRC / "__init__.py": (r'(?m)^__version__ = ".*"$', '__version__ = "{}"'),
+    ROOT / "server" / "src" / "cynogis_server" / "__init__.py":
+        (r'(?m)^__version__ = ".*"$', '__version__ = "{}"'),
+    ROOT / "pyproject.toml": (r'(?m)^version = ".*"$', 'version = "{}"'),
+}
 
 
 def read_metadata() -> dict[str, str]:
@@ -43,9 +51,12 @@ def bump_version(version: str) -> str:
 
 
 def write_version(version: str) -> None:
-    text = METADATA.read_text(encoding="utf-8")
-    METADATA.write_text(re.sub(r"(?m)^version=.*$", f"version={version}", text),
-                        encoding="utf-8")
+    for path, (pattern, template) in VERSION_FILES.items():
+        text = path.read_text(encoding="utf-8")
+        new, count = re.subn(pattern, template.format(version), text, count=1)
+        if count != 1:
+            sys.exit(f"✗ Version introuvable dans {path.relative_to(ROOT)}.")
+        path.write_text(new, encoding="utf-8")
 
 
 def build_zip(version: str) -> Path:
