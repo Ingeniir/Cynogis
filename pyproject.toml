@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "cynogis-server"
 version = "0.1.0"
-description = "Serveur MCP pour piloter QGIS (bureau d'études, La Réunion & Mayotte"
+description = "Serveur MCP pour piloter QGIS (bureau d'études, La Réunion & Mayotte)"
 requires-python = ">=3.10"
 dependencies=["mcp>=1.20.0,<2"]
 
