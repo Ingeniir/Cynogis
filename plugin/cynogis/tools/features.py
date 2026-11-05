@@ -8,6 +8,7 @@ from qgis.core import Qgis, QgsFeatureRequest, QgsGeometry, QgsVectorLayer
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
 from ..core.jobs import Pacer, Steps
+from ..core.privacy import is_sensitive_field, mask_sensitive
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
@@ -69,7 +70,8 @@ def get_features(layer_id: str, filter_expression: str | None, fields: list[str]
             has_more = True
             break
         item: dict[str, Any] = {"fid": feature.id(),
-                                "attributes": {n: to_json_value(feature[n]) for n in names}}
+                                "attributes": mask_sensitive(
+                                    {n: to_json_value(feature[n]) for n in names})}
         if geometry_format != "none":
             item["geometry"], truncated = _geometry_repr(feature.geometry(), geometry_format,
                                                          precision)
@@ -99,6 +101,12 @@ def get_field_values(layer_id: str, field: str, filter_expression: str | None,
     for feature in layer.getFeatures(feature_request(layer, filter_expression, [name], False)):
         counter[group_key(feature[name])] += 1
     nulls = counter.pop(None, 0)
+    if is_sensitive_field(name):
+        # Champ nominatif ou espèce sensible : effectifs seulement, jamais les valeurs.
+        return {"field": name, "type": layer.fields().field(name).typeName(),
+                "total": sum(counter.values()) + nulls, "null_count": nulls,
+                "distinct_count": len(counter), "masked": True, "values": [],
+                "truncated": False}
     return {
         "field": name, "type": layer.fields().field(name).typeName(),
         "total": sum(counter.values()) + nulls, "null_count": nulls,

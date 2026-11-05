@@ -33,6 +33,7 @@ from qgis.PyQt.QtCore import QMetaType, Qt
 from ..core.errors import ErrorCode, ToolError
 from ..core.fields import resolve_type
 from ..core.jobs import note
+from ..core.privacy import sensitive_fields
 from ..core.territory import UNKNOWN, detect_territory
 
 WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -207,6 +208,16 @@ def prepare_expression(text: str, layer: QgsVectorLayer,
         raise ToolError(ErrorCode.INVALID_PARAMS,
                         f"{label} invalide : {expression.evalErrorString()}",
                         {"expression": text, "fields": layer.fields().names()})
+    if label == "filter_expression":
+        # Filtrer sur un champ sensible révèle ses valeurs par les effectifs : refusé.
+        columns = expression.referencedColumns()
+        if QgsFeatureRequest.ALL_ATTRIBUTES in columns:  # attribute(@var) et assimilés
+            columns = layer.fields().names()
+        sensitive = sensitive_fields(columns)
+        if sensitive:
+            raise ToolError(ErrorCode.INVALID_PARAMS,
+                            f"filter_expression ne peut pas porter sur un champ sensible : "
+                            f"{', '.join(sensitive)}.", {"expression": text})
     return expression, context
 
 
