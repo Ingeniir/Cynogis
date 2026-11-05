@@ -14,3 +14,11 @@ SENSITIVE_TOKENS = frozenset({
 def is_sensitive_field(name: str) -> bool:
     norm = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
     return any(token in SENSITIVE_TOKENS for token in re.split(r"[^a-z0-9]+", norm))
+
+
+MASK = "***"
+
+
+def mask_sensitive(attributes: dict) -> dict:
+    """Copie des attributs où la valeur de chaque champ sensible est remplacée par MASK."""
+    return {k: MASK if is_sensitive_field(k) else v for k, v in attributes.items()}
