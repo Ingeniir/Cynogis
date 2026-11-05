@@ -44,7 +44,7 @@ Chaque outil déclare un niveau :
 - `run_algorithm` n'accepte qu'une liste blanche d'algorithmes Processing ; les sorties sont imposées par Cynogis.
 - Sorties en GeoPackage dans `<projet>/mcp_outputs/`, jamais écrasées (suffixes `_2`, `_3`…), ajoutées au groupe « Cynogis ».
 - `execute_pyqgis` (dernier recours) : l'IA décrit chaque étape, l'utilisateur voit le code et accepte ou refuse.
-- Pont TCP limité à `127.0.0.1`, protégé par un jeton régénéré à chaque démarrage. Aucune donnée ne quitte le poste.
+- Pont TCP limité à `127.0.0.1`, protégé par un jeton régénéré à chaque démarrage. Le pont QGIS est local ; les résultats des outils sont transmis au fournisseur d'IA choisi.
 - Chaque appel est journalisé (`~/.cynogis/audit`).
 
 ## Architecture
