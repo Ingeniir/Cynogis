@@ -238,7 +238,7 @@ def feature_request(layer: QgsVectorLayer, filter_expression: str | None = None,
         else:
             request.setNoAttributes()
     if not geometry and not filter_needs_geometry:
-        request.setFlags(Qgis.FeatureRequestFlag.NoGeometry)
+        request.setFlags(request.flags() | Qgis.FeatureRequestFlag.NoGeometry)
     return request
 
 
@@ -518,7 +518,7 @@ def select_ids(layer: QgsVectorLayer, expression: str | None, feature_ids: list 
         wanted = list(dict.fromkeys(int(value) for value in feature_ids))
         request = QgsFeatureRequest().setFilterFids(wanted)
         request.setNoAttributes()
-        request.setFlags(Qgis.FeatureRequestFlag.NoGeometry)
+        request.setFlags(request.flags() | Qgis.FeatureRequestFlag.NoGeometry)
         existing = {feature.id() for feature in layer.getFeatures(request)}
         missing = [fid for fid in wanted if fid not in existing]
         if missing:

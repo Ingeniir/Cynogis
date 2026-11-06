@@ -929,7 +929,8 @@ def distance_layer(layer_id: str, target_layer_id: str, mode: str, k: int,
     # La distance de l'algorithme est planaire, dans le SCR source : remplacée par l'ellipsoïdale.
     da = distance_area(lines.crs())
     index = lines.fields().indexOf("distance")
-    distances = {f.id(): length_m(da, f.geometry()) for f in lines.getFeatures()}
+    distances = {f.id(): length_m(da, f.geometry())
+                 for f in lines.getFeatures(feature_request(lines, attributes=[]))}
     if index >= 0:
         lines.dataProvider().changeAttributeValues(
             {fid: {index: round(d, 2)} for fid, d in distances.items()})

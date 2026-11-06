@@ -26,7 +26,14 @@ from ..core.fields import RESERVED_FIELDS, unique_field_name
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from ..core.territory import detect_territory
-from .common import add_to_memory, crs_from_text, geometry_kind, make_field, to_json_value
+from .common import (
+    add_to_memory,
+    crs_from_text,
+    feature_request,
+    geometry_kind,
+    make_field,
+    to_json_value,
+)
 from .geoprocessing import OUTPUT_NAME
 from .outputs import save_to_project
 
@@ -49,7 +56,7 @@ def _read(path: str, layer_name: str | None) -> tuple[list[str], list[tuple[dict
     points = geometry_kind(layer) == "point"
     columns = layer.fields().names()
     rows = []
-    for feature in layer.getFeatures():
+    for feature in layer.getFeatures(feature_request(layer, geometry=points)):
         geometry = feature.geometry()
         keep = points and not (geometry.isNull() or geometry.isEmpty())
         rows.append(({name: to_json_value(feature[name]) for name in columns},
