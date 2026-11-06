@@ -150,6 +150,7 @@ def _local_source(entry: dict, search: QgsRectangle, crs) -> Source:
     if entry.get("filter"):
         prepare_expression(entry["filter"], layer, "filter")
         request.setFilterExpression(entry["filter"])
+    _only_fields(request, layer, name_field)
     path = layer.source().split("|")[0]
     if entry.get("date"):
         try:
@@ -165,6 +166,15 @@ def _local_source(entry: dict, search: QgsRectangle, crs) -> Source:
         dated, origin = "", f"couche locale : {layer.name()}"
     return Source(list(layer.getFeatures(request)), layer.crs(), name_field, None,
                   zoning.Provenance("locale", origin, dated))
+
+
+def _only_fields(request: QgsFeatureRequest, layer: QgsVectorLayer, *names: str | None) -> None:
+    """Ne lit que les champs utiles au croisement (le filtre ajoute les siens)."""
+    wanted = [n for n in names if n and layer.fields().lookupField(n) >= 0]
+    if wanted:
+        request.setSubsetOfAttributes(wanted, layer.fields())
+    else:
+        request.setNoAttributes()
 
 
 def _cached_source(item: zoning.Zoning, territory: str | None, search: QgsRectangle,
@@ -190,6 +200,7 @@ def _cached_source(item: zoning.Zoning, territory: str | None, search: QgsRectan
         return None, f"cache illisible : {gpkg}"
     request = QgsFeatureRequest().setFilterRect(QgsCoordinateTransform(
         crs, layer.crs(), QgsProject.instance()).transformBoundingBox(search))
+    _only_fields(request, layer, item.name_field, item.url_field)
     features, layer_crs = list(layer.getFeatures(request)), layer.crs()
     del layer                                # libère le fichier (verrou Windows)
     return Source(features, layer_crs, item.name_field, item.url_field, provenance), ""

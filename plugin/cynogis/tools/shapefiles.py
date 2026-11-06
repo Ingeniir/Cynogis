@@ -32,6 +32,7 @@ from ..core.territory import detect_territory
 from .common import (
     crs_from_text,
     extent_wgs84,
+    feature_request,
     geometry_kind,
     get_vector_layer,
     layer_field_types,
@@ -60,7 +61,8 @@ def _scan_sidecars(shp_path: str) -> tuple[list[str], dict[str, int]]:
 
 def _text_sample(layer: QgsVectorLayer) -> list[str]:
     sample: list[str] = []
-    for index, feature in enumerate(layer.getFeatures()):
+    request = feature_request(layer, geometry=False).setLimit(SAMPLE_FEATURES + 1)
+    for index, feature in enumerate(layer.getFeatures(request)):
         sample.extend(v for v in feature.attributes() if isinstance(v, str))
         if index >= SAMPLE_FEATURES:
             break

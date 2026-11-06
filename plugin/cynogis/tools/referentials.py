@@ -250,7 +250,8 @@ def clip_reference_landcover(layer_id: str, source: str, feature_ids: list | Non
     summary: dict[str, dict[str, Any]] = {}
     features = []
     pace = Pacer("surfaces des paysages", singles.featureCount())
-    for i, feature in enumerate(singles.getFeatures()):
+    for i, feature in enumerate(singles.getFeatures(
+            feature_request(singles, attributes=["pays_code"]))):
         yield from pace(i)
         item = nomenclature.BY_CODE[feature["pays_code"]]
         surface = area_m2(da, feature.geometry())
