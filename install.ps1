@@ -2,6 +2,8 @@
 # Usage : powershell -ExecutionPolicy Bypass -File .\install.ps1
 #           [-Referentials "E:\referentials"] [-QgisProfile default]
 #           [-Agent claude|codex|both|none]
+# Sans -Referentials : <depot>\referentials, sinon \referentials sur une cle USB.
+# Lettre de cle fausse (E: au lieu de D:) : le chemin est cherche sur chaque cle.
 param(
     [string]$Referentials = "",
     [string]$QgisProfile = "default",
@@ -76,10 +78,32 @@ foreach ($p in $profiles) {
 # ---------------------------------------------------------------- 4. Referentiels
 $refDir = "$HOME\.cynogis\referentials"
 New-Item -ItemType Directory -Force $refDir | Out-Null
-if (-not $Referentials -and (Test-Path "$Repo\referentials")) { $Referentials = "$Repo\referentials" }
+
+# La lettre d'une cle USB change selon le poste (D:, E:...) : on essaie le chemin donne,
+# puis le meme chemin sur chaque lecteur amovible branche.
+function Find-Referentials([string]$Given) {
+    $usb = [IO.DriveInfo]::GetDrives() |
+        Where-Object { $_.DriveType -eq "Removable" -and $_.IsReady } |
+        ForEach-Object { $_.RootDirectory.FullName }
+    if ($Given) {
+        $Given = $Given.TrimEnd('\')   # "E:\ref\" casserait les guillemets de robocopy
+        $rel = if ([IO.Path]::IsPathRooted($Given)) { $Given.Substring([IO.Path]::GetPathRoot($Given).Length) } else { $Given }
+        $candidates = @($Given) + @($usb | ForEach-Object { Join-Path $_ $rel })
+    } else {
+        $candidates = @("$Repo\referentials") + @($usb | ForEach-Object { Join-Path $_ "referentials" })
+    }
+    return $candidates | Where-Object { Test-Path $_ -PathType Container } | Select-Object -First 1
+}
+
+$found = Find-Referentials $Referentials
+if ($Referentials -and -not $found) {
+    throw "Dossier de referentiels introuvable : $Referentials (ni sur un lecteur amovible)"
+}
+if ($found -and $Referentials -and ($found -ne $Referentials.TrimEnd('\'))) {
+    Write-Host "      $Referentials absent, utilisation de $found"
+}
+$Referentials = $found
 if ($Referentials) {
-    $Referentials = $Referentials.TrimEnd('\')   # "E:\ref\" casserait les guillemets de robocopy
-    if (-not (Test-Path $Referentials)) { throw "Dossier de referentiels introuvable : $Referentials" }
     Write-Host "[4/5] Copie des referentiels depuis $Referentials..."
     robocopy $Referentials $refDir /E /NFL /NDL /NJH /NJS | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "Echec de la copie des referentiels" }
