@@ -1,17 +1,17 @@
 # Graph Report - cynogis  (2026-11-06)
 
 ## Corpus Check
-- 138 files · ~102,942 words
+- 138 files · ~103,363 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 3 file(s) not represented in the graph (top: (none) 3)
 
 ## Summary
-- 2137 nodes · 6439 edges · 108 communities (86 shown, 22 thin omitted)
-- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 515 edges (avg confidence: 0.93)
+- 2152 nodes · 6475 edges · 112 communities (87 shown, 25 thin omitted)
+- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 519 edges (avg confidence: 0.93)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `d1808d91`
+- Built from commit: `f3b69a5f`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -19,35 +19,36 @@
 - app.py
 - Services web WFS/WMS
 - report.py
+- dispatcher.py
 - select_ids
-- require_field
+- feature_request
 - Proximité et observations
 - Métriques paysagères
 - Documentation projet
-- ToolResult
+- geometry_kind
 - Protocole et pont TCP
-- get_class
+- core/landscape.py
 - ToolError
 - test_landscape.py
 - Coefficients de surface
 - Couleurs
 - Plugin et démarrage
 - Référentiels d'occupation du sol
-- check_shapefile
+- get_vector_layer
 - Terrain et pentes
 - Palettes
 - Tests des jobs
-- Contrôle des shapefiles
-- detect_territory
-- stats.py
+- tools/project_audit.py
+- correlation_matrix
+- math
 - Journal d'édition
 - Exécution en tâche de fond
 - Infos couches
 - classify.py
 - Champs et types
-- run_in_memory
+- density.py
 - ToolRegistry
-- plugin.py
+- confirm.py
 - Données terrain CSV
 - Résolution des recouvrements
 - allocate
@@ -75,36 +76,36 @@
 - move_features
 - protocol.py
 - pytest
-- json
+- Zoning
 - Cache des zonages
 - Plan d'échantillonnage
-- get_vector_layer
-- core/landscape.py
-- bbox_covers
+- privacy.py
+- apply_graduated_style
+- core/zoning.py
 - Fraîcheur des sources
-- Cohérence des versions
+- _sibling
 - Validation des éditions
 - Pauses et run_now
 - AuditLog
-- styling.py
+- ToolResult
 - QgsVectorLayer
-- Faits de couches
+- BridgeServer
 - Guide d'installation
 - Contrôle du code PyQGIS
 - Règles métier réglementaires
-- _geometry_repr
-- check_surfaces.py
+- to_json_value
+- core/impacts.py
 - Contrôle des géométries
 - Phase 1 surfaces
 - Règles d'architecture
 - Règles de sécurité
 - Règles d'ajout d'outil
-- tools/algorithms.py
+- execute_pyqgis
 - Phase 3 traçabilité
 - Catégories de coefficients
 - BridgeResult
 - Commandes de dev
-- test_territory.py
+- Pacer
 - Métadonnées plugin
 - Liste blanche algorithmes
 - Débogage
@@ -114,15 +115,19 @@
 - Fichiers locaux
 - cynogis-server
 - format_number
-- regulatory_prescan
-- layer_field_types
-- organize_layers
+- get_palette
+- list_style_options
+- _closer_parts
 - install.ps1
-- Rule
+- to_float
+- CoefficientSpec
+- app
+- needs_priority_field
+- Cynogis Plugin Icon (icon.svg)
 
 ## God Nodes (most connected - your core abstractions)
-1. `ToolError` - 201 edges
-2. `ErrorCode` - 183 edges
+1. `ToolError` - 202 edges
+2. `ErrorCode` - 184 edges
 3. `tool()` - 154 edges
 4. `ToolResult` - 106 edges
 5. `get_vector_layer()` - 100 edges
@@ -156,131 +161,131 @@
 - **Règles métier sur les surfaces et le pré-diagnostic** — raport_surfaces_ellipsoidales, raport_fusion_avant_somme, raport_surface_3d, raport_regulatory_prescan, raport_territoires_reunion_mayotte, raport_natura_2000_exclu [INFERRED 0.85]
 - **Fiabilite des surfaces (regles, roadmap 1.1-1.3, helpers)** — docs_roadmap_1_1_reference_tests, docs_roadmap_1_2_forbid_4326, docs_roadmap_1_3_surface_method, plugin_cynogis_tools_common_area_m2, plugin_cynogis_tools_common_area_method [INFERRED 0.95]
 
-## Communities (108 total, 22 thin omitted)
+## Communities (112 total, 25 thin omitted)
 
 ### Community 0 - "app.py"
-Cohesion: 0.10
-Nodes (13): main(), call_tool(), _fetch_specs(), list_tools(), _progress_token(), run(), _to_tool(), _wait_job() (+5 more)
+Cohesion: 0.08
+Nodes (16): QgsLogHandler, setup_logging(), teardown_logging(), main(), call_tool(), _fetch_specs(), list_tools(), _progress_token() (+8 more)
 
 ### Community 1 - "Services web WFS/WMS"
 Cohesion: 0.06
-Nodes (45): is_natura2000_layer(), capabilities_url(), catalog(), check_url(), _child_text(), _children_text(), choose_crs(), _crs_list() (+37 more)
+Nodes (44): is_natura2000_layer(), capabilities_url(), catalog(), check_url(), _child_text(), _children_text(), choose_crs(), _crs_list() (+36 more)
 
 ### Community 2 - "report.py"
 Cohesion: 0.11
 Nodes (20): build_html(), build_markdown(), _escape_cell(), _image_src(), normalize_sections(), normalize_table(), table_to_rows(), sections() (+12 more)
 
-### Community 4 - "select_ids"
-Cohesion: 0.15
-Nodes (13): begin_edit(), refresh_layer(), select_ids(), add_features(), calculate_field(), _check_count(), delete_features(), _delete_features_details() (+5 more)
+### Community 3 - "dispatcher.py"
+Cohesion: 0.13
+Nodes (3): render_notes(), Level, Param
 
-### Community 5 - "require_field"
+### Community 4 - "select_ids"
 Cohesion: 0.16
-Nodes (10): compute_coefficients(), _geometries(), landscape_metrics(), _load_zones(), _polygon_layer(), _reference_areas(), _zones_of(), overlap_warning() (+2 more)
+Nodes (12): begin_edit(), refresh_layer(), select_ids(), calculate_field(), _check_count(), delete_features(), _delete_features_details(), delete_field() (+4 more)
+
+### Community 5 - "feature_request"
+Cohesion: 0.10
+Nodes (18): build_table(), add_to_memory(), feature_request(), group_key(), make_field(), polygon_parts(), write_table(), get_field_values() (+10 more)
 
 ### Community 6 - "Proximité et observations"
-Cohesion: 0.08
-Nodes (24): to_float(), convert_area(), convert_length(), feature_request(), iter_geometries(), _collect(), count_observations(), count_points_in_polygon() (+16 more)
+Cohesion: 0.09
+Nodes (21): convert_area(), convert_length(), iter_geometries(), _collect(), count_observations(), count_points_in_polygon(), _distance_m(), distance_matrix() (+13 more)
 
 ### Community 7 - "Métriques paysagères"
 Cohesion: 0.06
-Nodes (33): circularity(), division_index(), dominance(), edge_density(), effective_mesh_size(), fractal_dimension(), interpret_metrics(), largest_patch_index() (+25 more)
+Nodes (34): circularity(), division_index(), dominance(), edge_density(), effective_mesh_size(), elongation(), fractal_dimension(), interpret_metrics() (+26 more)
 
 ### Community 8 - "Documentation projet"
 Cohesion: 0.05
 Nodes (49): Alignement de version (0.1.0, build_plugin --bump, test_version), Architecture deux processus (serveur MCP + plugin QGIS via pont TCP), Catalogue des outils (105 + 4 internes), Catalogue d'outils relayé et cache tools_cache.json, Compatibilité QGIS 3.38+ (Qt5) et 4.x (Qt6) via compat.py, Confidentialité : masquage des champs sensibles (privacy.py), Confirmation humaine DESTROY (register_detail_provider), ~/.cynogis/connection.json (découverte du pont) (+41 more)
 
-### Community 9 - "ToolResult"
-Cohesion: 0.06
-Nodes (41): ToolResult, Pacer, needs_priority_field(), add_to_memory(), area_m2(), area_method(), dissolved_areas(), distance_area() (+33 more)
+### Community 9 - "geometry_kind"
+Cohesion: 0.08
+Nodes (31): compute_coefficients(), _geometries(), landscape_metrics(), _load_zones(), _polygon_layer(), _reference_areas(), _zones_of(), area_m2() (+23 more)
 
 ### Community 10 - "Protocole et pont TCP"
-Cohesion: 0.12
-Nodes (6): Response, BridgeServer, Dispatcher, finish(), collecting(), render_notes()
+Cohesion: 0.17
+Nodes (4): Request, Dispatcher, finish(), collecting()
 
-### Community 11 - "get_class"
-Cohesion: 0.18
-Nodes (8): get_class(), LandscapeClass, merge_nomenclature(), score_match(), test_merge_nomenclature_refuse(), test_merge_nomenclature_valide(), test_score_match_exact_et_mot_cle(), test_score_match_mots_entiers()
+### Community 11 - "core/landscape.py"
+Cohesion: 0.09
+Nodes (18): apply_mapping(), get_class(), LandscapeClass, merge_nomenclature(), ndvi_deviation(), ndvi_range(), register(), score_match() (+10 more)
 
 ### Community 12 - "ToolError"
-Cohesion: 0.05
-Nodes (35): ErrorCode, ToolError, export_atlas_pdf(), _from_template(), crs_from_text(), prepare_expression(), export_table(), _write_csv() (+27 more)
+Cohesion: 0.10
+Nodes (17): ErrorCode, ToolError, unique_field_name(), crs_from_text(), _write_csv(), write_pdf(), import_field_data(), _read() (+9 more)
 
 ### Community 13 - "test_landscape.py"
-Cohesion: 0.13
-Nodes (11): classes_for(), suggest_mapping(), validate_codes(), check_rules(), list_landscape_classes(), test_classes_for_territoire_inconnu(), test_classes_specifiques_territoire(), test_suggest_mapping_reconnait_les_libelles() (+3 more)
+Cohesion: 0.20
+Nodes (7): classes_for(), validate_codes(), check_rules(), test_classes_for_territoire_inconnu(), test_classes_specifiques_territoire(), test_validate_codes(), test_tables_coherentes_avec_la_nomenclature()
 
 ### Community 14 - "Coefficients de surface"
-Cohesion: 0.09
-Nodes (25): CoefficientSpec, compute_all(), coverage_ratio(), density(), floor_area_ratio(), footprint_ratio(), interpret(), _key() (+17 more)
+Cohesion: 0.10
+Nodes (24): compute_all(), coverage_ratio(), density(), floor_area_ratio(), footprint_ratio(), interpret(), _key(), _ratio() (+16 more)
 
 ### Community 15 - "Couleurs"
-Cohesion: 0.10
-Nodes (18): darken(), distinct_colors(), interpolate_ramp(), lighten(), mix(), parse_color(), to_hex(), to_rgba_string() (+10 more)
-
-### Community 16 - "Plugin et démarrage"
-Cohesion: 0.11
-Nodes (5): new_token(), remove_connection_file(), write_connection_file(), classFactory(), CynogisPlugin
+Cohesion: 0.12
+Nodes (15): darken(), interpolate_ramp(), lighten(), mix(), parse_color(), to_hex(), to_rgba_string(), test_interpolate_ramp_extremites_conservees() (+7 more)
 
 ### Community 17 - "Référentiels d'occupation du sol"
 Cohesion: 0.07
-Nodes (27): _covers(), find_source_file(), is_agricultural(), map_cirad(), map_feature(), map_ocsge(), referentials_directory(), _segments() (+19 more)
+Nodes (28): _covers(), find_source_file(), is_agricultural(), map_cirad(), map_feature(), map_ocsge(), referentials_directory(), Rule (+20 more)
 
-### Community 18 - "check_shapefile"
-Cohesion: 0.18
-Nodes (8): looks_like_mojibake(), check_shapefile(), load_layer(), _mojibake_hint(), _scan_sidecars(), set_layer_encoding(), _text_sample(), test_mojibake()
+### Community 18 - "get_vector_layer"
+Cohesion: 0.12
+Nodes (14): get_vector_layer(), _delete_field_details(), _merge_details(), select_features(), buffer(), dissolve(), extract(), fix_geometries() (+6 more)
 
 ### Community 19 - "Terrain et pentes"
-Cohesion: 0.09
-Nodes (20): altitude_band(), aspect_sector(), degrees_to_percent(), distribution(), parse_bands(), percent_to_degrees(), reclass_table(), slope_class() (+12 more)
+Cohesion: 0.06
+Nodes (28): altitude_band(), aspect_sector(), degrees_to_percent(), distribution(), parse_bands(), percent_to_degrees(), reclass_table(), slope_class() (+20 more)
 
 ### Community 20 - "Palettes"
-Cohesion: 0.09
-Nodes (16): validate_colors(), all_palettes(), describe_palettes(), get_palette(), landscape_palette(), load_user_palettes(), register_palette(), resolve_colors() (+8 more)
+Cohesion: 0.11
+Nodes (12): distinct_colors(), validate_colors(), with_alpha(), landscape_palette(), register_palette(), resolve_colors(), validate_palette(), test_distinct_colors_sans_doublon() (+4 more)
 
 ### Community 21 - "Tests des jobs"
-Cohesion: 0.12
-Nodes (24): app(), boucle(), calcul(), effacer(), erreur_avant(), lecture(), make(), _req() (+16 more)
+Cohesion: 0.15
+Nodes (22): boucle(), calcul(), effacer(), erreur_avant(), lecture(), make(), _req(), sans_etape() (+14 more)
 
-### Community 22 - "Contrôle des shapefiles"
-Cohesion: 0.11
-Nodes (15): truncate_field_names(), companion_paths(), export_plan(), sidecar_messages(), sidecar_report(), SidecarReport, size_messages(), test_truncate_field_names_sans_doublon() (+7 more)
+### Community 22 - "tools/project_audit.py"
+Cohesion: 0.07
+Nodes (27): truncate_field_names(), companion_paths(), export_plan(), looks_like_mojibake(), sidecar_messages(), sidecar_report(), SidecarReport, size_messages() (+19 more)
 
-### Community 23 - "detect_territory"
-Cohesion: 0.25
-Nodes (3): detect_territory(), Territory, _overview_extent()
+### Community 23 - "correlation_matrix"
+Cohesion: 0.13
+Nodes (12): correlate(), correlation_pairs(), linear_fit(), ranks(), strength(), correlation_matrix(), test_describe_full_shape(), test_empty() (+4 more)
 
-### Community 24 - "stats.py"
-Cohesion: 0.09
-Nodes (25): correlate(), correlation_pairs(), correlation_pvalue(), describe_categorical(), describe_full(), interpret_shape(), kurtosis(), linear_fit() (+17 more)
+### Community 24 - "math"
+Cohesion: 0.18
+Nodes (9): correlation_pvalue(), describe_full(), interpret_shape(), kurtosis(), pearson(), percentile(), skewness(), _t95() (+1 more)
 
 ### Community 25 - "Journal d'édition"
-Cohesion: 0.11
-Nodes (10): check_batch_size(), EditEntry, EditJournal, journal(), test_check_batch_size(), test_clear_cible(), test_count_for_operations(), test_describe_summary_lisible() (+2 more)
+Cohesion: 0.10
+Nodes (11): check_batch_size(), EditEntry, EditJournal, journal(), test_check_batch_size(), test_clear_cible(), test_count_for_operations(), test_describe_summary_lisible() (+3 more)
 
 ### Community 26 - "Exécution en tâche de fond"
-Cohesion: 0.13
-Nodes (6): _FetchTask, _Handle, _input_layers(), _needs_main_thread(), ProcessingExecutor, _take_layers()
+Cohesion: 0.10
+Nodes (10): AlgCall, Fetch, _FetchTask, _Handle, _input_layers(), _needs_main_thread(), ProcessingExecutor, _take_layers() (+2 more)
 
 ### Community 27 - "Infos couches"
-Cohesion: 0.15
-Nodes (17): clean_number(), crs_info(), enum_name(), extent_wgs84(), get_layer(), get_raster_layer(), layer_kind(), rect_to_list() (+9 more)
+Cohesion: 0.09
+Nodes (23): detect_territory(), Territory, _overview_extent(), clean_number(), crs_info(), enum_name(), extent_wgs84(), file_format() (+15 more)
 
 ### Community 28 - "classify.py"
 Cohesion: 0.13
 Nodes (20): clean_values(), compute_breaks(), _dedupe(), equal_interval(), natural_breaks(), pretty_breaks(), quantile_breaks(), standard_deviation_breaks() (+12 more)
 
 ### Community 29 - "Champs et types"
-Cohesion: 0.11
+Cohesion: 0.10
 Nodes (18): coerce_record(), coerce_value(), FieldType, _parse_date(), resolve_type(), sanitize_field_name(), test_coerce_record_champ_inconnu_strict(), test_coerce_record_non_strict() (+10 more)
 
-### Community 30 - "run_in_memory"
-Cohesion: 0.32
-Nodes (3): _run(), run_in_memory(), distance_layer()
+### Community 30 - "density.py"
+Cohesion: 0.14
+Nodes (7): _isopleth_geometries(), _isopleths(), kernel_density_points(), _save_isopleths(), _style(), extract_ravines(), run_in_memory()
 
-### Community 32 - "plugin.py"
-Cohesion: 0.08
-Nodes (10): QgsLogHandler, setup_logging(), teardown_logging(), Cynogis Plugin Icon (icon.svg), Green Map Location Pin, ping(), build_details(), make_confirmer() (+2 more)
+### Community 31 - "ToolRegistry"
+Cohesion: 0.13
+Nodes (7): PermissionPolicy, spec_of(), ToolRegistry, ToolSpec, build_details(), make_confirmer(), confirm()
 
 ### Community 33 - "Données terrain CSV"
 Cohesion: 0.13
@@ -291,20 +296,20 @@ Cohesion: 0.16
 Nodes (14): _comparable(), half_plane_corners(), rank_records(), summarize_resolution(), records(), test_egalite_stable(), test_half_plane_centres_confondus(), test_half_plane_contient_le_milieu_cote_a() (+6 more)
 
 ### Community 35 - "allocate"
-Cohesion: 0.28
+Cohesion: 0.25
 Nodes (6): allocate(), unit_id(), test_allocation_egale_et_strate_vide(), test_allocation_impossible(), test_allocation_proportionnelle(), test_unit_id()
 
 ### Community 36 - "tool"
 Cohesion: 0.06
-Nodes (29): unique_field_name(), tool(), _isopleth_geometries(), _isopleths(), kernel_density_points(), _style(), buffer(), dissolve() (+21 more)
+Nodes (24): tool(), decorator(), _allowed(), describe_algorithm(), list_algorithms(), run_algorithm(), get_raster_layer(), compute_ndvi() (+16 more)
 
 ### Community 37 - "Catalogue d'algorithmes"
-Cohesion: 0.15
-Nodes (10): AlgorithmSpec, get_spec(), is_allowed(), _matches(), search_algorithms(), normalize(), test_liste_blanche(), test_recherche_multi_termes() (+2 more)
+Cohesion: 0.12
+Nodes (13): AlgorithmSpec, get_spec(), is_allowed(), _matches(), search_algorithms(), normalize(), test_liste_blanche(), test_recherche_multi_termes() (+5 more)
 
 ### Community 38 - "Audit de projet (tests)"
-Cohesion: 0.18
-Nodes (19): audit(), duplicate_name_findings(), _finding(), layer_findings(), add(), project_findings(), _yes_no(), severities() (+11 more)
+Cohesion: 0.16
+Nodes (22): audit(), build_sections(), duplicate_name_findings(), _finding(), layer_findings(), add(), project_findings(), severity_counts() (+14 more)
 
 ### Community 39 - "Distances"
 Cohesion: 0.14
@@ -315,64 +320,64 @@ Cohesion: 0.24
 Nodes (11): check_python(), ensure_venv(), has_native_stubs(), install_stubs(), _is_link(), link_plugin(), load_env(), main() (+3 more)
 
 ### Community 41 - "Historique des styles"
-Cohesion: 0.18
+Cohesion: 0.15
 Nodes (6): StyleHistory, StyleSnapshot, test_history_derniere_couche(), test_history_ignore_xml_vide(), test_history_profondeur_limitee(), test_history_push_pop()
 
 ### Community 42 - "TAXREF"
-Cohesion: 0.21
-Nodes (10): _columns(), match_taxa(), read_statuses(), Statuses, Taxon, listed(), _values(), test_match_taxa() (+2 more)
+Cohesion: 0.11
+Nodes (15): _columns(), find_file(), match_taxa(), name_key(), open_table(), read_statuses(), Statuses, Taxon (+7 more)
 
 ### Community 43 - "HABREF"
 Cohesion: 0.17
 Nodes (10): correspond(), Habitat, _index(), load_correspondences(), load_typology(), match_habitats(), test_correspondances(), test_load_typology_filtre_la_typologie() (+2 more)
 
 ### Community 44 - "Tests de style"
-Cohesion: 0.10
-Nodes (24): build_categories(), describe_options(), _lookup(), normalize_geometry(), _number(), validate_labels(), validate_symbol(), test_build_categories_couleurs_automatiques() (+16 more)
+Cohesion: 0.11
+Nodes (22): build_categories(), _lookup(), normalize_geometry(), _number(), validate_labels(), validate_symbol(), test_build_categories_couleurs_automatiques(), test_build_categories_couleurs_imposees() (+14 more)
 
 ### Community 45 - "Enjeux écologiques"
-Cohesion: 0.09
-Nodes (21): build_table(), compare_variants(), direct_label(), ring_labels(), stake_weight(), Criterion, level_for(), level_number() (+13 more)
+Cohesion: 0.19
+Nodes (12): Criterion, level_for(), level_number(), Override, parse_criteria(), parse_overrides(), parse_thresholds(), score() (+4 more)
 
 ### Community 46 - "Téléchargement WFS"
-Cohesion: 0.14
-Nodes (10): Fetch, service_label(), _bbox_wgs84(), _cached_source(), fetch_wfs_layer(), _is_cancel(), _local_source(), Source (+2 more)
+Cohesion: 0.16
+Nodes (8): service_label(), _bbox_wgs84(), _cached_source(), fetch_wfs_layer(), _is_cancel(), Source, _sources(), _wfs_features()
 
 ### Community 47 - "Schéma des paramètres"
 Cohesion: 0.19
-Nodes (10): _check(), object_schema(), Param, _type_ok(), validate_params(), test_defaults_applied(), test_integer_float_coerced(), test_invalid() (+2 more)
+Nodes (9): _check(), object_schema(), _type_ok(), validate_params(), test_defaults_applied(), test_integer_float_coerced(), test_invalid(), test_items_enum() (+1 more)
 
 ### Community 48 - "Gestionnaire de jobs"
 Cohesion: 0.13
 Nodes (3): Executor, Job, JobManager
 
 ### Community 49 - "Notes et warnings des jobs"
-Cohesion: 0.15
+Cohesion: 0.14
 Nodes (5): note(), FakeExecutor, job_invalide(), mesure_invalide(), test_notes_ajoutees_aux_warnings()
 
 ### Community 50 - "Audit de projet"
-Cohesion: 0.11
-Nodes (11): build_sections(), severity_counts(), verdict(), export_map_image(), render_map(), write_document(), write_pdf(), audit_project() (+3 more)
+Cohesion: 0.16
+Nodes (5): render_map(), audit_project(), _open_project(), _overview_map(), _project_facts()
 
 ### Community 51 - "Tests zonage"
-Cohesion: 0.14
-Nodes (8): getfeature_url(), status(), test_freshness(), test_getfeature_url_first_page_has_no_startindex(), test_getfeature_url_pagination_and_cql(), test_read_cache_meta_rejects_bad_files(), test_statut(), test_url_getfeature()
+Cohesion: 0.18
+Nodes (6): getfeature_url(), test_freshness(), test_getfeature_url_first_page_has_no_startindex(), test_getfeature_url_pagination_and_cql(), test_read_cache_meta_rejects_bad_files(), test_url_getfeature()
 
 ### Community 52 - "contrast_ratio"
 Cohesion: 0.22
 Nodes (5): contrast_ratio(), readable_text_color(), relative_luminance(), test_contraste_extremes(), test_readable_text_color()
 
 ### Community 53 - "Level"
-Cohesion: 0.16
-Nodes (16): PermissionPolicy, Level, decorator(), ToolSpec, crash(), double(), make(), metier() (+8 more)
+Cohesion: 0.30
+Nodes (12): crash(), double(), make(), metier(), _req(), supprimer(), test_destroy_with_confirmation(), test_errors() (+4 more)
 
 ### Community 54 - "Feuille de route"
 Cohesion: 0.13
 Nodes (13): Feuille de route Cynogis, Jalons, Phase 0 : Outillage du developpement, Phase 4 : Specificites de Mayotte (Chido, Fani Maore, cadastre), Phase 5 : Modules metier (EEE, ERC, FRAGSTATS, habitats), Phase 0 : Outillage du développement (prérequis), Phase 1 : Fiabilité des calculs de surface (priorité critique), Phase 2 : Robustesse réglementaire (pré-diagnostic) (+5 more)
 
 ### Community 55 - "Mise en page atlas"
-Cohesion: 0.19
-Nodes (8): Box, layout_boxes(), page_size(), _build(), _label(), _north_arrow(), test_formats(), test_zones_dans_la_page_sans_chevauchement()
+Cohesion: 0.17
+Nodes (9): Box, layout_boxes(), page_size(), _build(), _from_template(), _label(), _north_arrow(), test_formats() (+1 more)
 
 ### Community 56 - "Build du plugin"
 Cohesion: 0.22
@@ -383,84 +388,84 @@ Cohesion: 0.18
 Nodes (9): _change_geometries(), _conform(), _geometries(), _measure(), move_features(), _reference_subset(), _snap(), snap_features() (+1 more)
 
 ### Community 58 - "protocol.py"
-Cohesion: 0.19
-Nodes (8): decode_request(), _protocol_error(), Request, _line(), test_decode_invalid(), test_decode_valid(), test_missing_token_is_unauthorized(), test_response_encode_has_audit_id()
+Cohesion: 0.13
+Nodes (10): new_token(), remove_connection_file(), write_connection_file(), decode_request(), _protocol_error(), _line(), test_decode_invalid(), test_decode_valid() (+2 more)
 
 ### Community 59 - "pytest"
-Cohesion: 0.15
-Nodes (9): elongation(), describe(), describe_groups(), test_register_module_without_tools_fails(), test_elongation(), test_describe_basic(), test_describe_empty_and_single(), test_groups_sorted_by_sum() (+1 more)
+Cohesion: 0.16
+Nodes (10): describe(), describe_categorical(), describe_groups(), _r(), weighted_stats(), test_categorical_entropy(), test_weighted_median(), test_describe_basic() (+2 more)
 
-### Community 60 - "json"
-Cohesion: 0.17
-Nodes (9): assess(), cache_matches(), cache_meta(), _inpn(), read_cache_meta(), Zoning, zoning_state(), test_cache_meta_roundtrip_and_matching() (+1 more)
+### Community 60 - "Zoning"
+Cohesion: 0.16
+Nodes (8): assess(), cache_matches(), for_territory(), _inpn(), Zoning, regulatory_prescan(), test_par_territoire(), test_pre_diagnostic()
 
 ### Community 61 - "Cache des zonages"
-Cohesion: 0.28
-Nodes (4): cache_paths(), cache_root(), _write_cache(), test_cache_root_env_override()
+Cohesion: 0.21
+Nodes (7): cache_meta(), cache_paths(), cache_root(), read_cache_meta(), _write_cache(), test_cache_meta_roundtrip_and_matching(), test_cache_root_env_override()
 
 ### Community 62 - "Plan d'échantillonnage"
-Cohesion: 0.18
+Cohesion: 0.21
 Nodes (4): _cut(), _Sampler, _segment(), _systematic()
 
-### Community 63 - "get_vector_layer"
-Cohesion: 0.08
-Nodes (20): is_sensitive_field(), mask_sensitive(), sensitive_fields(), get_vector_layer(), length_m(), to_json_value(), check_geometries(), get_features() (+12 more)
+### Community 63 - "privacy.py"
+Cohesion: 0.18
+Nodes (7): to_ascii(), is_sensitive_field(), mask_sensitive(), sensitive_fields(), test_mask_sensitive_hides_only_sensitive_values(), test_sensitive_fields_in_filter_columns(), test_sensitive()
 
-### Community 64 - "core/landscape.py"
+### Community 64 - "apply_graduated_style"
+Cohesion: 0.21
+Nodes (10): _apply(), apply_graduated_style(), apply_landscape_style(), apply_single_style(), _categorized(), _kind(), _numeric_values(), _snapshot() (+2 more)
+
+### Community 65 - "core/zoning.py"
 Cohesion: 0.20
-Nodes (6): apply_mapping(), ndvi_deviation(), ndvi_range(), register(), test_apply_mapping_insensible_aux_accents(), test_ndvi_controle()
-
-### Community 65 - "bbox_covers"
-Cohesion: 0.50
-Nodes (3): bbox_covers(), should_replace_cache(), test_bbox_rules()
+Nodes (6): bbox_covers(), should_replace_cache(), status(), zoning_state(), test_bbox_rules(), test_statut()
 
 ### Community 66 - "Fraîcheur des sources"
 Cohesion: 0.16
 Nodes (10): age_days(), describe_sources(), freshness(), prescan_sections(), Provenance, provenance_from_data(), test_age_never_negative_and_tolerates_garbage(), test_describe_multiple_sources_and_missing() (+2 more)
 
-### Community 67 - "Cohérence des versions"
-Cohesion: 0.15
-Nodes (6): find_file(), name_key(), open_table(), _sibling(), test_open_table_zip(), test_versions_aligned()
-
 ### Community 68 - "Validation des éditions"
-Cohesion: 0.18
-Nodes (10): describe_summary(), _commit_details(), _delete_field_details(), _editing_layers(), get_pending_edits(), _merge_details(), request_commit(), rollback_edits() (+2 more)
+Cohesion: 0.19
+Nodes (10): describe_summary(), is_shapefile(), add_field(), _commit_details(), _editing_layers(), _field_limit(), get_pending_edits(), request_commit() (+2 more)
 
 ### Community 69 - "Pauses et run_now"
-Cohesion: 0.24
-Nodes (7): AlgCall, Pause, run_now(), test_pacer_ne_cede_qu_apres_l_intervalle(), test_run_now(), algo(), steps()
+Cohesion: 0.32
+Nodes (5): Pause, run_now(), test_pacer_ne_cede_qu_apres_l_intervalle(), test_run_now(), steps()
 
 ### Community 70 - "AuditLog"
 Cohesion: 0.36
 Nodes (5): AuditLog, _truncate(), test_destroy_params_never_truncated(), test_long_params_truncated(), test_writes_jsonl_and_filters()
 
-### Community 71 - "styling.py"
-Cohesion: 0.08
-Nodes (16): clean_name(), to_ascii(), unique_path(), mentions_natura2000(), _output_path(), _project_target(), save_project(), _save_project_details() (+8 more)
+### Community 71 - "ToolResult"
+Cohesion: 0.07
+Nodes (26): ToolResult, clean_name(), unique_path(), mentions_natura2000(), export_atlas_pdf(), expression_context(), get_layer(), prepare_expression() (+18 more)
 
 ### Community 72 - "QgsVectorLayer"
-Cohesion: 0.22
-Nodes (6): expression_context(), geometry_from_wkt(), is_shapefile(), wkt_to_layer_crs(), add_field(), _field_limit()
-
-### Community 73 - "Faits de couches"
-Cohesion: 0.29
-Nodes (5): file_format(), source_path(), _layer_facts(), _raster_facts(), _vector_facts()
+Cohesion: 0.18
+Nodes (6): field_type_name(), geometry_from_wkt(), layer_field_types(), wkt_to_layer_crs(), add_features(), _field_kind()
 
 ### Community 74 - "Guide d'installation"
 Cohesion: 0.22
 Nodes (10): scripts/build_plugin.py --bump --repo, Variable CYNOGIS_REFERENTIALS_DIR, cynogis-server.exe, Guide d'installation Cynogis (poste entreprise), Branchement du client MCP (Claude Code, Claude Desktop, Codex), Partage réseau \\SERVEUR\Cynogis (plugins, serveur, referentials), Dépôt QGIS privé (plugins.xml), Tableau de dépannage (QGIS_UNAVAILABLE, BUSY, UNKNOWN…) (+2 more)
 
 ### Community 75 - "Contrôle du code PyQGIS"
-Cohesion: 0.31
-Nodes (4): risky_names(), _details(), test_code_anodin_ou_invalide(), test_repere_modules_et_appels_sensibles()
+Cohesion: 0.24
+Nodes (6): blocking_calls(), risky_names(), _details(), test_appels_bloquants(), test_code_anodin_ou_invalide(), test_repere_modules_et_appels_sensibles()
 
 ### Community 76 - "Règles métier réglementaires"
 Cohesion: 0.22
 Nodes (5): 2.1 Fichier de configuration des seuils, 2.3 Exclure Natura 2000, 2.4/2.5 Zonages Reunion et Mayotte, 2.6 Pre-diagnostic 100 % deterministe, Phase 2 : Robustesse reglementaire (pre-diagnostic)
 
-### Community 78 - "check_surfaces.py"
-Cohesion: 0.27
-Nodes (3): check_surface_3d(), square(), synthetic_dem()
+### Community 77 - "to_json_value"
+Cohesion: 0.22
+Nodes (4): to_json_value(), _geometry_repr(), get_features(), suggest_landscape_mapping()
+
+### Community 78 - "core/impacts.py"
+Cohesion: 0.19
+Nodes (8): compare_variants(), direct_label(), ring_labels(), stake_weight(), test_anneaux(), test_comparaison_variantes(), test_poids_enjeu(), test_tableau()
+
+### Community 79 - "Contrôle des géométries"
+Cohesion: 0.29
+Nodes (3): check_geometries(), _error_kind(), geometry_report()
 
 ### Community 80 - "Phase 1 surfaces"
 Cohesion: 0.29
@@ -478,9 +483,9 @@ Nodes (4): Job response and polling (get_job_status / cancel_job), Permission le
 Cohesion: 0.40
 Nodes (4): Adding a tool (@tool decorator, Param, docstring), Edit buffer + core/edits.py JOURNAL, core/jobs.py::note warnings from shared helpers, Territory CRS: Reunion EPSG:2975, Mayotte EPSG:4471
 
-### Community 84 - "tools/algorithms.py"
-Cohesion: 0.24
-Nodes (5): _allowed(), describe_algorithm(), list_algorithms(), run_algorithm(), is_optional()
+### Community 84 - "execute_pyqgis"
+Cohesion: 0.16
+Nodes (5): _as_generator(), execute_pyqgis(), _failure(), _fetch(), _run_algorithm()
 
 ### Community 85 - "Phase 3 traçabilité"
 Cohesion: 0.50
@@ -490,37 +495,41 @@ Nodes (4): 1.3 Methode plane ou ellipsoidale documentee, 3.1 Encart de tracabili
 Cohesion: 0.39
 Nodes (6): BridgeResult, FakeClient, test_wait_job_annule_dans_qgis(), scenario(), test_wait_job_delai_depasse(), test_wait_job_interroge_jusqu_au_resultat()
 
-### Community 89 - "test_territory.py"
-Cohesion: 0.38
-Nodes (4): test_detect(), test_is_natura2000_layer(), test_mentions_natura2000(), test_natura2000_absent_du_code()
+### Community 89 - "Pacer"
+Cohesion: 0.21
+Nodes (4): Pacer, clip_reference_landcover(), _clipped(), _overlay()
 
 ### Community 102 - "format_number"
 Cohesion: 0.33
 Nodes (4): format_number(), range_labels(), test_format_number_francais(), test_range_labels()
 
-### Community 103 - "regulatory_prescan"
-Cohesion: 0.40
-Nodes (3): for_territory(), regulatory_prescan(), test_par_territoire()
+### Community 103 - "get_palette"
+Cohesion: 0.22
+Nodes (6): all_palettes(), get_palette(), load_user_palettes(), test_get_palette_etiree(), test_get_palette_inconnue(), test_load_user_palettes_ignore_les_erreurs()
+
+### Community 104 - "list_style_options"
+Cohesion: 0.29
+Nodes (4): describe_palettes(), describe_options(), list_style_options(), test_describe_options_contenu()
 
 ## Knowledge Gaps
 - **40 isolated node(s):** `cynogis-server`, `metadata.txt (Cynogis Reunion-Mayotte 0.1.0)`, `Green Map Location Pin`, `Phase 0 : Outillage du developpement`, `Phase 4 : Specificites de Mayotte (Chido, Fani Maore, cadastre)` (+35 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 736 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **22 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 744 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **25 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `ToolError` connect `ToolError` to `Services web WFS/WMS`, `dispatcher.py`, `select_ids`, `require_field`, `Proximité et observations`, `ToolResult`, `Protocole et pont TCP`, `Référentiels d'occupation du sol`, `check_shapefile`, `Tests des jobs`, `Exécution en tâche de fond`, `Infos couches`, `run_in_memory`, `plugin.py`, `tool`, `Téléchargement WFS`, `Schéma des paramètres`, `Gestionnaire de jobs`, `Notes et warnings des jobs`, `Audit de projet`, `Level`, `move_features`, `protocol.py`, `Plan d'échantillonnage`, `get_vector_layer`, `Validation des éditions`, `styling.py`, `QgsVectorLayer`, `tools/algorithms.py`, `organize_layers`?**
-  _High betweenness centrality (0.103) - this node is a cross-community bridge._
+- **Why does `ToolError` connect `ToolError` to `Services web WFS/WMS`, `dispatcher.py`, `select_ids`, `feature_request`, `Proximité et observations`, `geometry_kind`, `Protocole et pont TCP`, `core/landscape.py`, `Référentiels d'occupation du sol`, `get_vector_layer`, `Terrain et pentes`, `Tests des jobs`, `tools/project_audit.py`, `correlation_matrix`, `Exécution en tâche de fond`, `Infos couches`, `density.py`, `ToolRegistry`, `tool`, `Téléchargement WFS`, `Schéma des paramètres`, `Gestionnaire de jobs`, `Notes et warnings des jobs`, `Audit de projet`, `Level`, `Mise en page atlas`, `move_features`, `protocol.py`, `apply_graduated_style`, `Validation des éditions`, `ToolResult`, `QgsVectorLayer`, `BridgeServer`, `Contrôle des géométries`, `execute_pyqgis`, `Pacer`?**
+  _High betweenness centrality (0.097) - this node is a cross-community bridge._
 - **Are the 94 inferred relationships involving `ToolError` (e.g. with `Response` and `BridgeServer`) actually correct?**
   _`ToolError` has 94 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `cynogis-server`, `metadata.txt (Cynogis Reunion-Mayotte 0.1.0)`, `Green Map Location Pin` to the rest of the system?**
   _40 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `app.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.10420168067226891 - nodes in this community are weakly interconnected._
-- **Why does `ErrorCode` connect `ToolError` to `Services web WFS/WMS`, `dispatcher.py`, `select_ids`, `require_field`, `Proximité et observations`, `ToolResult`, `Protocole et pont TCP`, `Référentiels d'occupation du sol`, `check_shapefile`, `Tests des jobs`, `Exécution en tâche de fond`, `Infos couches`, `run_in_memory`, `plugin.py`, `tool`, `Téléchargement WFS`, `Schéma des paramètres`, `Gestionnaire de jobs`, `Notes et warnings des jobs`, `Audit de projet`, `Level`, `move_features`, `protocol.py`, `Plan d'échantillonnage`, `get_vector_layer`, `Validation des éditions`, `styling.py`, `QgsVectorLayer`, `tools/algorithms.py`, `organize_layers`?**
-  _High betweenness centrality (0.095) - this node is a cross-community bridge._
-- **Are the 142 inferred relationships involving `ErrorCode` (e.g. with `decode_request()` and `_protocol_error()`) actually correct?**
-  _`ErrorCode` has 142 INFERRED edges - model-reasoned connections that need verification._
+  _Cohesion score 0.07712765957446809 - nodes in this community are weakly interconnected._
+- **Why does `ErrorCode` connect `ToolError` to `Services web WFS/WMS`, `dispatcher.py`, `select_ids`, `feature_request`, `Proximité et observations`, `geometry_kind`, `Protocole et pont TCP`, `core/landscape.py`, `Référentiels d'occupation du sol`, `get_vector_layer`, `Terrain et pentes`, `Tests des jobs`, `tools/project_audit.py`, `correlation_matrix`, `Exécution en tâche de fond`, `Infos couches`, `density.py`, `ToolRegistry`, `tool`, `Téléchargement WFS`, `Schéma des paramètres`, `Gestionnaire de jobs`, `Notes et warnings des jobs`, `Audit de projet`, `Level`, `Mise en page atlas`, `move_features`, `protocol.py`, `apply_graduated_style`, `Validation des éditions`, `ToolResult`, `QgsVectorLayer`, `BridgeServer`, `Contrôle des géométries`, `execute_pyqgis`, `Pacer`?**
+  _High betweenness centrality (0.078) - this node is a cross-community bridge._
+- **Are the 143 inferred relationships involving `ErrorCode` (e.g. with `decode_request()` and `_protocol_error()`) actually correct?**
+  _`ErrorCode` has 143 INFERRED edges - model-reasoned connections that need verification._
 - **Should `Services web WFS/WMS` be split into smaller, more focused modules?**
-  _Cohesion score 0.059940059940059943 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.05821917808219178 - nodes in this community are weakly interconnected._
