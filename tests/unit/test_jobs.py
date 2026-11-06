@@ -383,3 +383,28 @@ def test_client_reponse_illisible(tmp_path):
         return err.value.code
 
     assert asyncio.run(scenario()) == "PROTOCOL_ERROR"
+
+
+# --- Serveur MCP : catalogue en cache mémoire ---------------------------------------------
+class CatalogClient:
+    def __init__(self):
+        self.conn, self.calls = {"port": 1, "token": "a"}, 0
+
+    def _read_connection(self):
+        return self.conn
+
+    async def call(self, method, params=None):
+        from cynogis_server.client import BridgeResult
+        self.calls += 1
+        return BridgeResult({"tools": [{"name": f"t{self.calls}"}]})
+
+
+def test_catalogue_relu_seulement_si_le_pont_change(app, monkeypatch, tmp_path):
+    client = CatalogClient()
+    monkeypatch.setattr(app, "_client", client)
+    monkeypatch.setattr(app, "_specs_cache", None)
+    monkeypatch.setattr(app, "CACHE_FILE", tmp_path / "tools_cache.json")
+    assert asyncio.run(app._fetch_specs()) == [{"name": "t1"}]
+    assert asyncio.run(app._fetch_specs()) == [{"name": "t1"}] and client.calls == 1
+    client.conn = {"port": 1, "token": "b"}  # pont redémarré
+    assert asyncio.run(app._fetch_specs()) == [{"name": "t2"}] and client.calls == 2

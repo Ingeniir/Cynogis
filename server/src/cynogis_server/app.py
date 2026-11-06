@@ -31,6 +31,9 @@ sont validées par un humain dans QGIS ; en cas de refus, ne réessaie pas sans 
 
 server = Server("cynogis", instructions=INSTRUCTIONS)
 _client = QgisBridgeClient()
+# Catalogue de la session QGIS en cours, clé = (port, jeton) de connection.json : un
+# redémarrage du pont (QGIS relancé, plugin rechargé) change le jeton et force la relecture.
+_specs_cache: tuple[tuple[Any, Any], list[dict[str, Any]]] | None = None
 
 
 def _to_tool(spec: dict[str, Any]) -> types.Tool:
@@ -46,6 +49,14 @@ def _to_tool(spec: dict[str, Any]) -> types.Tool:
 
 
 async def _fetch_specs() -> list[dict[str, Any]]:
+    global _specs_cache
+    try:
+        conn = _client._read_connection()
+        key = (conn.get("port"), conn.get("token"))
+    except BridgeError:
+        key = None
+    if key is not None and _specs_cache is not None and _specs_cache[0] == key:
+        return _specs_cache[1]
     try:
         result = await _client.call("list_tools")
     except BridgeError as exc:
@@ -55,6 +66,8 @@ async def _fetch_specs() -> list[dict[str, Any]]:
         except (OSError, ValueError):
             return []
     specs = result.data["tools"]
+    if key is not None:
+        _specs_cache = key, specs
     try:
         CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         CACHE_FILE.write_text(json.dumps(specs, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -79,7 +92,8 @@ async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.T
                    if exc.details else "")
         raise RuntimeError(f"{exc}{details}") from exc  # → isError=true, lisible par l'IA
     payload = {"data": result.data, "warnings": result.warnings, "audit_id": result.audit_id}
-    return [types.TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, indent=1))]
+    return [types.TextContent(type="text", text=json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":")))]
 
 
 def _progress_token() -> str | int | None:
