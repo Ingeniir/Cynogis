@@ -3,7 +3,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from cynogis.core.landcover import LandcoverConfig
+from cynogis.core.landcover import LandcoverConfig, validate_rgb_bands
 
 
 def test_default_config():
@@ -110,3 +110,34 @@ def test_serialized_data_is_independent():
 def test_extremely_large_number_is_rejected():
     with pytest.raises(ValueError, match="working_resolution_m"):
         LandcoverConfig(working_resolution_m=10**1000)
+
+def test_rgb_bands_accepts_three_band_raster():
+    assert validate_rgb_bands([1, 2, 3], 3) == (1, 2, 3)
+
+def test_rgb_bands_preserves_explicit_order():
+    assert validate_rgb_bands([3, 2, 1], 4) == (3, 2, 1)
+
+@pytest.mark.parametrize(
+    "bands",
+    [
+        [],
+        [1, 2],
+        [1, 2, 3, 4],
+        [1, 1, 2],
+        [0, 1, 2],
+        [1, 2, 5],
+        [True, 2, 3],
+        [1.0, 2, 3],
+        ["1", 2, 3],
+        None,
+    ],
+)
+def test_rgb_bands_rejects_invalid_indices(bands):
+    with pytest.raises(ValueError):
+        validate_rgb_bands(bands, 4)
+
+
+@pytest.mark.parametrize("band_count", [0, -1, True, 3.0, None])
+def test_rgb_bands_rejects_invalid_band_count(band_count):
+    with pytest.raises(ValueError, match="band_count"):
+        validate_rgb_bands([1, 2, 3], band_count)

@@ -93,3 +93,38 @@ class LandcoverConfig:
     def to_dict(self) -> dict:
         """Produit les paramètres sérialisables de la configuration."""
         return asdict(self)
+
+def validate_rgb_bands(
+        rgb_bands: list[int],
+        band_count: int,
+) -> tuple[int, int, int]:
+    """Valide les indices des bandes dans l'ordre rouge, vert, bleu.
+
+    Cette fonction vérifie uniquement les indices.
+    Elle ne prouve pas que ces bandes correspondent réellement au RGB.
+    """
+    if (
+        isinstance(band_count, bool)
+        or not isinstance(band_count, int)
+        or band_count < 1
+    ):
+        raise ValueError("band_count doit être un entier strictement positif.")
+
+    if not isinstance(rgb_bands, list) or len(rgb_bands) != 3:
+        raise ValueError("rgb_bands doit contenir exactement trois indices.")
+
+    if any(
+        isinstance(band, bool) or not isinstance(band, int)
+        for band in rgb_bands
+    ):
+        raise ValueError("Les indices de rgb_bands doivent être des entiers.")
+
+    if len(set(rgb_bands)) != 3:
+        raise ValueError("Les trois indices de rgb_bands doivent être distincts.")
+
+    if any(band < 1 or band > band_count for band in rgb_bands):
+        raise ValueError(
+            f"Les indices de rgb_bands doivent être compris entre 1 et {band_count}."
+        )
+
+    return rgb_bands[0], rgb_bands[1], rgb_bands[2]

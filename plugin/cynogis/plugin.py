@@ -26,6 +26,7 @@ from .tools import (
     geoprocessing,
     habref,
     impacts,
+    landcover,
     landscape,
     layers,
     measures,
@@ -52,7 +53,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path.home() / ".cynogis"
 MENU = "&Cynogis"
 TOOL_MODULES = (system, layers, features, measures, tabular, overlaps, geoprocessing, algorithms,
-                editing, shapefiles, coefficients, landscape, terrain, styling, export,
+                editing, shapefiles, coefficients, landscape, landcover, terrain, styling, export,
                 proximity, referentials, webservices, fielddata, taxref, habref,
                 stakes, density, sampling, atlas, zoning,
                 impacts, pyqgis, project_audit)
