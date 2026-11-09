@@ -128,3 +128,31 @@ def validate_rgb_bands(
         )
 
     return rgb_bands[0], rgb_bands[1], rgb_bands[2]
+
+@dataclass(frozen=True)
+class PreparationConfig:
+    """Configuration de la préparation native des entrées OBIA.
+
+    La politique de validité est obligatoire.
+    Cette première version ne permet pas d'ignorer les masques source.
+    """
+
+    validity_policy: str
+    max_pixels: int = 1_000_000
+
+    def __post_init__(self) -> None:
+        if self.validity_policy != "respect_source_masks":
+            raise ValueError(
+                "validity_policy doit être 'respect_source_masks'. "
+                "Les autres politiques ne sont pas encore implémentées."
+            )
+
+        if (
+            isinstance(self.max_pixels, bool)
+            or not isinstance(self.max_pixels, int)
+            or self.max_pixels <= 0
+        ):
+            raise ValueError("max_pixels doit être un entier strictement positif.")
+
+    def to_dict(self) -> dict:
+        return asdict(self)

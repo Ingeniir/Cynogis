@@ -3,7 +3,11 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from cynogis.core.landcover import LandcoverConfig, validate_rgb_bands
+from cynogis.core.landcover import (
+    LandcoverConfig,
+    PreparationConfig,
+    validate_rgb_bands,
+)
 
 
 def test_default_config():
@@ -141,3 +145,50 @@ def test_rgb_bands_rejects_invalid_indices(bands):
 def test_rgb_bands_rejects_invalid_band_count(band_count):
     with pytest.raises(ValueError, match="band_count"):
         validate_rgb_bands([1, 2, 3], band_count)
+
+def test_preparation_requires_explicit_policy():
+    with pytest.raises(TypeError):
+        PreparationConfig()
+
+
+def test_preparation_default_limit():
+    config = PreparationConfig(validity_policy="respect_source_masks")
+
+    assert config.max_pixels == 1_000_000
+    assert config.to_dict() == {
+        "validity_policy": "respect_source_masks",
+        "max_pixels": 1_000_000,
+    }
+
+
+@pytest.mark.parametrize(
+    "policy",
+    ["ignore_declared_nodata", "explicit_validity_mask", "", None, True],
+)
+def test_preparation_rejects_unsupported_policy(policy):
+    with pytest.raises(ValueError, match="validity_policy"):
+        PreparationConfig(validity_policy=policy)
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, "100", None])
+def test_preparation_rejects_invalid_limit(limit):
+    with pytest.raises(ValueError, match="max_pixels"):
+        PreparationConfig(
+            validity_policy="respect_source_masks",
+            max_pixels=limit,
+        )
+
+
+def test_preparation_is_immutable():
+    config = PreparationConfig(validity_policy="respect_source_masks")
+
+    with pytest.raises(FrozenInstanceError):
+        config.max_pixels = 10
+
+
+def test_preparation_json_serialization():
+    config = PreparationConfig(validity_policy="respect_source_masks")
+
+    serialized = json.dumps(config.to_dict(), allow_nan=False)
+
+    assert json.loads(serialized) == config.to_dict()
