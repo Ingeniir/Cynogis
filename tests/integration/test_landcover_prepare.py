@@ -368,32 +368,62 @@ def test_already_cancelled_preparation_creates_no_output(sample):
     assert list(sample["output"].iterdir()) == []
 
 
-def test_cancellation_with_failed_cleanup_is_a_technical_failure(sample, monkeypatch):
-    """Une annulation laissant un dossier résiduel n'est pas une annulation propre."""
+def test_cleanup_failure_after_cancellation_is_reported(sample, monkeypatch):
     cancelled = Event()
+    original_source = sample["source"].read_bytes()
+
+    sentinel = sample["output"] / "keep.txt"
+    sentinel.write_text("conserver", encoding="utf-8")
+
+    # Conserver la fonction réelle pour nettoyer les fichiers du test.
+    real_rmtree = preparation.shutil.rmtree
 
     def progress(value):
-        if value >= 50:
+        # Le premier raster a déjà été écrit et fermé.
+        if value == 50:
             cancelled.set()
 
-    def failing_rmtree(path, *args, **kwargs):
-        raise OSError("Fichier verrouillé simulé")
+    def failing_cleanup(_path):
+        raise PermissionError("Suppression bloquée pour le test")
 
-    monkeypatch.setattr(preparation.shutil, "rmtree", failing_rmtree)
+    control = PreparationControl(
+        on_progress=progress,
+        is_cancelled=cancelled.is_set,
+    )
 
-    with pytest.raises(RuntimeError, match="nettoyage incomplet") as caught:
-        _run(
-            sample,
-            control=PreparationControl(
-                on_progress=progress,
-                is_cancelled=cancelled.is_set,
-            ),
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(preparation.shutil, "rmtree", failing_cleanup)
+
+            with pytest.raises(
+                RuntimeError,
+                match="nettoyage incomplet",
+            ) as caught:
+                _run(sample, control=control)
+
+        assert isinstance(
+            caught.value.__cause__,
+            PreparationCancelledError,
         )
 
-    assert not isinstance(caught.value, PreparationCancelledError)
-    assert isinstance(caught.value.__cause__, PreparationCancelledError)
+        residual_directories = [
+            path
+            for path in sample["output"].iterdir()
+            if path.is_dir()
+        ]
 
-    # Le dossier résiduel est signalé et reste présent.
-    residual = [path for path in sample["output"].iterdir() if path.is_dir()]
-    assert len(residual) == 1
-    assert str(residual[0]) in str(caught.value)
+        assert len(residual_directories) == 1
+        residual = residual_directories[0]
+
+        assert residual.name.startswith("obia_")
+        assert str(residual) in str(caught.value)
+        assert not (residual / "preparation.json").exists()
+
+        assert sentinel.read_text(encoding="utf-8") == "conserver"
+        assert sample["source"].read_bytes() == original_source
+
+    finally:
+        # Nettoyage réel après la simulation d'échec.
+        for path in sample["output"].iterdir():
+            if path.is_dir() and path.name.startswith("obia_"):
+                real_rmtree(path)
