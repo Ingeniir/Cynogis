@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
+from threading import Event
 
 import pytest
 
 from cynogis.core.landcover import PreparationConfig
+from cynogis.core.landcover_execution import PreparationCancelledError, PreparationControl
 
 np = pytest.importorskip("numpy")
 gdal = pytest.importorskip("osgeo.gdal")
@@ -270,3 +272,128 @@ def test_failed_write_cleans_only_its_directory(sample, monkeypatch):
 
     assert sentinel.read_text(encoding="utf-8") == "conserver"
     assert list(sample["output"].iterdir()) == [sentinel]
+
+def test_preparation_reports_progress(sample):
+    received = []
+
+    report = _run(
+        sample,
+        control=PreparationControl(on_progress=received.append),
+    )
+
+    assert received == [
+        0.0,
+        20.0,
+        30.0,
+        35.0,
+        40.0,
+        50.0,
+        60.0,
+        70.0,
+        80.0,
+        84.0,
+        88.0,
+        92.0,
+        97.0,
+        99.0,
+    ]
+    assert report["status"] == "complete"
+
+    manifest = Path(report["output_directory"]) / "preparation.json"
+    assert manifest.is_file()
+
+
+@pytest.mark.parametrize(
+    "cancel_at",
+    [0, 20, 30, 35, 40, 50, 60, 70, 80, 84, 88, 92, 97, 99],
+)
+def test_cancellation_cleans_own_outputs(sample, cancel_at):
+    cancelled = Event()
+    received = []
+
+    sentinel = sample["output"] / "keep.txt"
+    sentinel.write_text("conserver", encoding="utf-8")
+    original_source = sample["source"].read_bytes()
+
+    def progress(value):
+        received.append(value)
+        if value >= cancel_at:
+            cancelled.set()
+
+    control = PreparationControl(
+        on_progress=progress,
+        is_cancelled=cancelled.is_set,
+    )
+
+    with pytest.raises(PreparationCancelledError):
+        _run(sample, control=control)
+
+    assert received[-1] == float(cancel_at)
+    assert sample["source"].read_bytes() == original_source
+    assert sentinel.read_text(encoding="utf-8") == "conserver"
+    assert list(sample["output"].iterdir()) == [sentinel]
+
+
+def test_progress_error_also_cleans_outputs(sample):
+    sentinel = sample["output"] / "keep.txt"
+    sentinel.write_text("conserver", encoding="utf-8")
+
+    def progress(value):
+        # Le premier raster a déjà été écrit et fermé.
+        if value == 50:
+            raise RuntimeError("Notification impossible")
+
+    with pytest.raises(RuntimeError, match="Notification impossible"):
+        _run(
+            sample,
+            control=PreparationControl(on_progress=progress),
+        )
+
+    assert sentinel.read_text(encoding="utf-8") == "conserver"
+    assert list(sample["output"].iterdir()) == [sentinel]
+
+
+def test_already_cancelled_preparation_creates_no_output(sample):
+    cancelled = Event()
+    cancelled.set()
+
+    with pytest.raises(PreparationCancelledError):
+        _run(
+            sample,
+            control=PreparationControl(
+                is_cancelled=cancelled.is_set,
+            ),
+        )
+
+    assert list(sample["output"].iterdir()) == []
+
+
+def test_cancellation_with_failed_cleanup_is_a_technical_failure(sample, monkeypatch):
+    """Une annulation laissant un dossier résiduel n'est pas une annulation propre."""
+    cancelled = Event()
+
+    def progress(value):
+        if value >= 50:
+            cancelled.set()
+
+    def failing_rmtree(path, *args, **kwargs):
+        raise OSError("Fichier verrouillé simulé")
+
+    monkeypatch.setattr(preparation.shutil, "rmtree", failing_rmtree)
+
+    with pytest.raises(RuntimeError, match="nettoyage incomplet") as caught:
+        _run(
+            sample,
+            control=PreparationControl(
+                on_progress=progress,
+                is_cancelled=cancelled.is_set,
+            ),
+        )
+
+    assert not isinstance(caught.value, PreparationCancelledError)
+    assert isinstance(caught.value.__cause__, PreparationCancelledError)
+
+    # Le dossier résiduel est signalé et reste présent.
+    residual = [path for path in sample["output"].iterdir() if path.is_dir()]
+    assert len(residual) == 1
+    assert str(residual[0]) in str(caught.value)

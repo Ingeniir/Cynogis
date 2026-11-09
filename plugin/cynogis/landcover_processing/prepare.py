@@ -19,6 +19,7 @@ import numpy as np
 from osgeo import gdal, ogr, osr
 
 from ..core.landcover import PreparationConfig, validate_rgb_bands
+from ..core.landcover_execution import PreparationControl
 
 
 def _check(code, operation: str) -> None:
@@ -311,13 +312,40 @@ def prepare_native_inputs(
     rgb_bands: list[int],
     output_parent: Path,
     config: PreparationConfig,
+    control: PreparationControl | None = None,
 ) -> dict:
     """Prépare un petit extrait sans modifier ses valeurs ni sa grille.
 
     Aucun objet QGIS n'est accepté ou manipulé.
     Le dossier parent doit déjà exister.
-    Le manifeste n'est créé qu'après validation complète des rasters.
+
+    control permet de transmettre des notifications de progression et de
+    détecter une annulation entre les phases. Les callbacks s'exécutent
+    dans le thread appelant ; ils ne doivent pas manipuler l'interface.
+
+    Une annulation détectée lève PreparationCancelledError. Si un dossier
+    d'exécution a été créé, son nettoyage est tenté avant propagation.
+    Un échec du nettoyage lève RuntimeError, avec l'exception initiale
+    conservée comme cause.
+
+    L'annulation est coopérative : elle n'interrompt pas un appel GDAL
+    déjà en cours.
+
+    Le dernier contrôle intervient avant publication du manifeste.
+    Une demande reçue après ce contrôle peut arriver trop tard pour
+    empêcher le retour d'un résultat complet. L'adaptateur de job devra
+    gérer cette annulation tardive avant de publier le résultat à l'utilisateur.
+
+    Aucun callback n'est appelé après publication du manifeste.
     """
+
+    if control is None:
+        control = PreparationControl()
+    elif not isinstance(control, PreparationControl):
+        raise ValueError("control doit être une PreparationControl.")
+
+    control.checkpoint(0)
+
     if not isinstance(config, PreparationConfig):
         raise ValueError("Une PreparationConfig est nécessaire.")
 
@@ -330,7 +358,9 @@ def prepare_native_inputs(
     rgb, validity, grid, band_metadata = _read_source(
         raster_path, rgb_bands, config
     )
+    control.checkpoint(20)
     aoi = _aoi_mask(aoi_wkb, aoi_crs_wkt, grid)
+    control.checkpoint(30)
 
     if not np.any(aoi):
         raise ValueError("Le périmètre ne sélectionne aucun pixel.")
@@ -357,6 +387,8 @@ def prepare_native_inputs(
     ):
         raise RuntimeError("Comptages incohérents.")
 
+    control.checkpoint(35)
+
     run = Path(tempfile.mkdtemp(prefix="obia_", dir=output_parent))
 
     try:
@@ -367,7 +399,8 @@ def prepare_native_inputs(
             "analysis_mask.tif": analysis.astype(np.uint8),
         }
 
-        for name, values in products.items():
+        for index, (name, values) in enumerate(products.items()):
+            control.checkpoint(40 + 10 * index)
             _write_raster(
                 run / name,
                 values,
@@ -375,13 +408,17 @@ def prepare_native_inputs(
                 validity=validity if name == "image_rgb.tif" else None,
             )
 
-        for name, values in products.items():
+
+        for index, (name, values) in enumerate(products.items()):
+            control.checkpoint(80 + 4 * index)
             _verify_raster(
                 run / name,
                 values,
                 grid,
                 validity=validity if name == "image_rgb.tif" else None,
             )
+
+        control.checkpoint(97)
 
         files = sorted(
             str(path.relative_to(run))
@@ -425,6 +462,9 @@ def prepare_native_inputs(
             json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False),
             encoding="utf-8",
         )
+
+        control.checkpoint(99)
+
         temporary.replace(run / "preparation.json")
         return report
 
