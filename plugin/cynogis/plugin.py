@@ -70,6 +70,8 @@ class CynogisPlugin:
         self._log_handler = setup_logging()
         self._unloading = False
         self._unload_failures: list[str] = []
+        self._bridge_stop_in_progress = False
+        self._bridge_cleanup_pending = False
         registry = ToolRegistry()
         for module in TOOL_MODULES:
             registry.register_module(module)
@@ -170,71 +172,137 @@ class CynogisPlugin:
 
     # --- Pont -------------------------------------------------------------
     def _on_toggled(self, checked: bool) -> None:
-        if checked:
-            self._start_bridge()
-        else:
-            self._stop_bridge()
+        if self._unloading:
+            self._set_checked(False)
+            return
+
+        try:
+            if checked:
+                self._start_bridge()
+            else:
+                self._stop_bridge()
+        except Exception as exc:
+            logger.exception("Échec du changement d'état du pont Cynogis.")
+            self._set_checked(False)
+            self._notify(
+                f"Le pont n'est pas disponible : {exc}",
+                Qgis.MessageLevel.Critical,
+            )
 
     def _start_bridge(self) -> None:
-        if self._bridge is not None:
-            return
         if self._unloading:
             logger.warning(
                 "Démarrage du pont refusé : déchargement du plugin en cours."
             )
             return
+
+        if self._bridge_stop_in_progress:
+            raise RuntimeError("Un arrêt du pont est déjà en cours.")
+
+        if self._bridge_cleanup_pending:
+            self._stop_bridge()
+
+        if self._bridge is not None:
+            return
+
         token = new_token()
-        bridge = BridgeServer(self._dispatcher, token, parent=self.iface.mainWindow())
+        bridge = BridgeServer(
+            self._dispatcher,
+            token,
+            parent=self.iface.mainWindow(),
+        )
+
+        # Garder les références avant les opérations susceptibles d'échouer.
+        self._bridge = bridge
+        self._token = token
+
         try:
             bridge.start()
             write_connection_file(HOST, bridge.port, token)
-        except (RuntimeError, OSError) as exc:
-            bridge.stop()
-            bridge.deleteLater()
-            self._notify(f"Échec du démarrage : {exc}", Qgis.MessageLevel.Critical)
-            self._set_checked(False)
-            return
-        self._bridge, self._token = bridge, token
-        self._notify(f"Serveur démarré (port {bridge.port})", Qgis.MessageLevel.Success)
+        except Exception as start_error:
+            failures = run_cleanup_steps([
+                (
+                    "nettoyage après échec du démarrage",
+                    lambda: self._stop_bridge(notify=False),
+                )
+            ])
 
-    def _stop_bridge(self) -> None:
+            if failures:
+                raise RuntimeError(
+                    f"Échec du démarrage : {start_error}. "
+                    f"Le nettoyage reste incomplet : {failures[0][1]}"
+                ) from start_error
+
+            raise
+
+        self._notify(
+            f"Serveur démarré (port {bridge.port})",
+            Qgis.MessageLevel.Success,
+        )
+
+    def _stop_bridge(self, *, notify: bool = True) -> None:
+        if self._bridge_stop_in_progress:
+            raise RuntimeError("Un arrêt du pont est déjà en cours.")
+
         bridge = self._bridge
         token = self._token
 
         if bridge is None and token is None:
+            self._bridge_cleanup_pending = False
             return
 
-        # Détacher les références de l'instance avant les appels,
-        # pour éviter une réentrance sur les mêmes ressources.
-        self._bridge = None
-        self._token = None
+        self._bridge_stop_in_progress = True
+        self._bridge_cleanup_pending = True
 
-        steps: list[CleanupStep] = []
+        def stop_and_release_bridge() -> None:
+            if bridge is None:
+                return
 
-        if bridge is not None:
-            steps.extend([
-                ("arrêt du serveur TCP", lambda: bridge.stop()),
-                (
-                    "suppression différée du serveur TCP",
-                    lambda: bridge.deleteLater(),
-                ),
-            ])
+            bridge.stop()
+            bridge.deleteLater()
 
-        if token is not None:
-            steps.append((
-                "suppression du fichier de connexion",
-                lambda: remove_connection_file(token),
-            ))
+            if self._bridge is bridge:
+                self._bridge = None
 
-        failures = run_cleanup_steps(steps)
+        def remove_and_release_connection() -> None:
+            if token is None:
+                return
 
-        if failures:
-            labels = ", ".join(label for label, _error in failures)
-            raise RuntimeError(
-                f"Arrêt du pont incomplet : {labels}."
-            ) from failures[0][1]
+            remove_connection_file(token, strict=True)
 
-        self._notify("Serveur arrêté", Qgis.MessageLevel.Info)
+            if self._token == token:
+                self._token = None
+
+        try:
+            steps: list[CleanupStep] = []
+
+            if bridge is not None:
+                steps.append((
+                    "arrêt et suppression différée du serveur TCP",
+                    stop_and_release_bridge,
+                ))
+
+            if token is not None:
+                steps.append((
+                    "suppression du fichier de connexion",
+                    remove_and_release_connection,
+                ))
+
+            failures = run_cleanup_steps(steps)
+
+            if failures:
+                labels = ", ".join(label for label, _error in failures)
+                raise RuntimeError(
+                    f"Arrêt du pont incomplet : {labels}"
+                ) from failures[0][1]
+
+            self._bridge_cleanup_pending = False
+
+        finally:
+            self._bridge_stop_in_progress = False
+
+        if notify:
+            self._notify("Serveur arrêté", Qgis.MessageLevel.Info)
 
     def _cancel_jobs(self, *_args) -> None:
         """Projet fermé, couche supprimée ou plugin déchargé : un traitement en cours

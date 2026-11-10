@@ -8,6 +8,7 @@ import logging
 from qgis.PyQt.QtCore import QObject
 from qgis.PyQt.QtNetwork import QAbstractSocket, QHostAddress, QTcpServer, QTcpSocket
 
+from ..core.cleanup import CleanupStep, run_cleanup_steps
 from ..core.dispatcher import Dispatcher
 from ..core.errors import ErrorCode, ToolError
 from .protocol import MAX_MESSAGE_BYTES, Response, decode_request
@@ -23,26 +24,64 @@ class BridgeServer(QObject):
         self._server = QTcpServer(self)
         self._server.newConnection.connect(self._on_new_connection)
         self._buffers: dict[QTcpSocket, bytearray] = {}
+        self._stopping = False
 
     @property
     def port(self) -> int:
         return int(self._server.serverPort())
 
     def start(self, port: int = 0) -> None:
-        """port=0 : le système choisit un port libre (communiqué via le fichier de connexion)."""
+        """Démarre une nouvelle instance du pont."""
+        if self._stopping:
+            raise RuntimeError(
+                "Impossible de redémarrer une instance du pont déjà arrêtée "
+                "ou en cours d'arrêt."
+            )
+
         if not self._server.listen(QHostAddress(HOST), port):
-            raise RuntimeError(f"écoute impossible sur {HOST}:{port}({self._server.errorString()})")
+            raise RuntimeError(
+                f"Écoute impossible sur {HOST}:{port} "
+                f"({self._server.errorString()})"
+            )
+
         logger.info("Pont en écoute sur %s:%d", HOST, self.port)
 
     def stop(self) -> None:
-        for sock in list(self._buffers):
+        """Interdit les nouvelles requêtes et tente toutes les fermetures.
+
+        Les sockets dont le nettoyage échoue restent référencées pour
+        permettre une nouvelle tentative.
+        """
+        self._stopping = True
+
+        def stop_socket(sock: QTcpSocket) -> None:
             sock.abort()
             sock.deleteLater()
-        self._buffers.clear()
-        self._server.close()
+            self._buffers.pop(sock, None)
+
+        steps: list[CleanupStep] = [
+            ("fermeture du serveur d'écoute", self._server.close),
+        ]
+
+        for index, sock in enumerate(list(self._buffers), start=1):
+            steps.append((
+                f"fermeture de la connexion {index}",
+                lambda sock=sock: stop_socket(sock),
+            ))
+
+        failures = run_cleanup_steps(steps)
+
+        if failures:
+            labels = ", ".join(label for label, _error in failures)
+            raise RuntimeError(
+                f"Arrêt réseau du pont incomplet : {labels}"
+            ) from failures[0][1]
 
     # --- Connexions ----------------------------------------------------------------------
     def _on_new_connection(self) -> None:
+        if self._stopping:
+            return
+
         while self._server.hasPendingConnections():
             sock = self._server.nextPendingConnection()
             if sock is None:
@@ -52,23 +91,44 @@ class BridgeServer(QObject):
             sock.disconnected.connect(lambda s=sock: self._on_disconnected(s))
 
     def _on_disconnected(self, sock: QTcpSocket) -> None:
+        if self._stopping:
+            return
+
         self._buffers.pop(sock, None)
         sock.deleteLater()
 
     def _on_ready_read(self, sock: QTcpSocket) -> None:
+        if self._stopping:
+            return
+
         buf = self._buffers.get(sock)
         if buf is None:
             return
+
         buf.extend(bytes(sock.readAll()))
+
         while (idx := buf.find(b"\n")) >= 0:
+            if self._stopping:
+                return
+
             line = bytes(buf[:idx])
             del buf[: idx + 1]
+
             if line.strip():
-                self._send(sock, self._handle_line(line))
+                response = self._handle_line(line)
+
+                if self._stopping:
+                    return
+
+                self._send(sock, response)
+
         if len(buf) > MAX_MESSAGE_BYTES:
-            err = ToolError(ErrorCode.PROTOCOL_ERROR, "Message trop volumineux.")
+            err = ToolError(
+                ErrorCode.PROTOCOL_ERROR,
+                "Message trop volumineux.",
+            )
             self._send(sock, Response.failure(None, err))
-            self._buffers.pop(sock, None)  # lectures suivantes ignorées jusqu'à la déconnexion
+            self._buffers.pop(sock, None)
             sock.disconnectFromHost()
 
     # --- Traitement ----------------------------------------------------------------------
@@ -81,6 +141,16 @@ class BridgeServer(QObject):
             logger.warning("Requête refusée : jeton invalide")
             return Response.failure(request.id,
                                     ToolError(ErrorCode.UNAUTHORIZED, "Jeton invalide."))
+
+        if self._stopping:
+            return Response.failure(
+                request.id,
+                ToolError(
+                    ErrorCode.BUSY,
+                    "Le pont Cynogis est en cours d'arrêt."
+                )
+            )
+
         logger.debug("→ %s", request.method)
         return self._dispatcher.dispatch(request)
 

@@ -31,10 +31,25 @@ def write_connection_file(host: str, port: int, token: str) -> Path:
     os.replace(tmp, CONNECTION_FILE)
     return CONNECTION_FILE
 
-def remove_connection_file(token: str) -> None:
-    """Ne supprime le fichier que s'il appartient à cette instance de QGIS."""
+def remove_connection_file(token: str, *, strict: bool = False) -> None:
+    """Supprime le fichier uniquement s'il appartient à cette instance.
+
+    Un fichier absent n'est pas une erreur.
+    En mode strict, les erreurs de lecture, de format ou de suppression
+    remontent à l'appelant.
+    """
     try:
-        if json.loads(CONNECTION_FILE.read_text(encoding="utf-8")).get("token") == token:
-            CONNECTION_FILE.unlink()
+        data = json.loads(CONNECTION_FILE.read_text(encoding="utf-8"))
+
+        if not isinstance(data, dict):
+            raise ValueError("Le fichier de connexion doit contenir un objet JSON.")
+
+        if data.get("token") != token:
+            return
+
+        CONNECTION_FILE.unlink()
+    except FileNotFoundError:
+        return
     except (OSError, ValueError):
-        pass
+        if strict:
+            raise
