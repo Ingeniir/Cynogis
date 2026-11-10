@@ -282,11 +282,24 @@ class FakeClient:
     def __init__(self, statuses):
         from cynogis_server.client import BridgeResult
         self.result, self.statuses, self.calls = BridgeResult, list(statuses), []
+        self.cancel_requested = False
 
     async def call(self, method, params=None):
         self.calls.append(method)
         if method == "cancel_job":
-            return self.result({})
+            self.cancel_requested = True
+            return self.result({
+                "status": "running",
+                "cancellation_requested": True,
+            })
+
+        if method == "get_job_status" and self.cancel_requested:
+            from cynogis_server.client import BridgeError
+
+            raise BridgeError(
+                "CANCELLED",
+                "Annulation confirmée par le faux pont.",
+            )
         status = self.statuses.pop(0)
         if status == "bloque":
             await asyncio.sleep(3600)
@@ -326,7 +339,12 @@ def test_wait_job_annule_dans_qgis(app, monkeypatch):
             await task
 
     asyncio.run(scenario())
-    assert client.calls[-1] == "cancel_job"
+    assert client.calls == [
+        "get_job_status",
+        "get_job_status",
+        "cancel_job",
+        "get_job_status",
+    ]
 
 
 def test_wait_job_delai_depasse(app, monkeypatch):
@@ -336,7 +354,13 @@ def test_wait_job_delai_depasse(app, monkeypatch):
     monkeypatch.setattr(app, "JOB_TIMEOUT_S", -1)
     with pytest.raises(BridgeError) as err:
         asyncio.run(app._wait_job(BridgeResult({}, job_id="j1")))
-    assert err.value.code == "TIMEOUT" and client.calls == ["cancel_job"]
+    assert err.value.code == "TIMEOUT"
+    assert client.calls == ["cancel_job", "get_job_status"]
+
+    cancellation = err.value.details["cancellation"]
+    assert cancellation["request_acknowledged"] is True
+    assert cancellation["stop_confirmed"] is True
+    assert cancellation["outcome"] == "cancelled"
 
 
 @tool(level=Level.DESTROY)

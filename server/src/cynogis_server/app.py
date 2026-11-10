@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import time
@@ -18,8 +17,13 @@ from .client import BridgeError, BridgeResult, QgisBridgeClient
 
 logger = logging.getLogger("cynogis_server")
 CACHE_FILE = Path.home() / ".cynogis" / "tools_cache.json"
-JOB_TIMEOUT_S = 3600.0          # au-delà, le traitement est annulé dans QGIS
+# Délai maximal d'attente avant demande d'annulation.
+# L'arrêt effectif est observé séparément, sans être garanti par ce délai.
+JOB_TIMEOUT_S = 3600.0
 POLL_FIRST_S, POLL_MAX_S = 0.2, 1.0
+
+CANCEL_GRACE_S = 5.0
+CANCEL_POLL_S = 0.2
 
 INSTRUCTIONS = """Tu pilotes QGIS pour un bureau d'études travaillant à La Réunion
 (SCR de référence EPSG:2975, RGR92 / UTM 40S) et à Mayotte (EPSG:4471, RGM04 / UTM 38S).
@@ -103,12 +107,83 @@ def _progress_token() -> str | int | None:
         return None
     return meta.progressToken if meta is not None else None
 
+async def _cancel_and_observe(job_id: str) -> dict[str, Any]:
+    """Demande l'annulation et observe sa fin pendant un délai borné.
+
+    Ne force jamais l'arrêt du worker QGIS.
+    Une absence de confirmation ne signifie pas que le job est arrêté.
+    Les détails d'une réponse d'erreur sont conservés, notamment les
+    chemins de sorties retenues après une annulation tardive.
+    """
+    observation: dict[str, Any] = {
+        "job_id": job_id,
+        "request_acknowledged": False,
+        "stop_confirmed": False,
+        "outcome": "unconfirmed",
+    }
+
+    stage = "cancel_job"
+
+    with anyio.move_on_after(CANCEL_GRACE_S, shield=True) as scope:
+        try:
+            acknowledgement = await _client.call(
+                "cancel_job",
+                {"job_id": job_id},
+            )
+
+            observation["request_acknowledged"] = True
+            observation["last_status"] = acknowledgement.data
+
+            stage = "get_job_status"
+
+            while True:
+                result = await _client.call(
+                    "get_job_status",
+                    {"job_id": job_id},
+                )
+
+                if result.job_id is None:
+                    observation["stop_confirmed"] = True
+                    observation["outcome"] = "completed"
+                    observation["terminal_result"] = result.data
+                    observation["terminal_warnings"] = result.warnings
+                    observation["audit_id"] = result.audit_id
+                    return observation
+
+                observation["last_status"] = result.data
+                await asyncio.sleep(CANCEL_POLL_S)
+        except BridgeError as exc:
+            observation["error"] = {
+                "code": exc.code,
+                "message": exc.message,
+                "details": exc.details,
+                "stage": stage,
+            }
+
+            if stage == "get_job_status" and exc.code == "CANCELLED":
+                observation["stop_confirmed"] = True
+                observation["outcome"] = "cancelled"
+            else:
+                observation["outcome"] = "observation_error"
+
+            return observation
+
+    if scope.cancel_called:
+        observation["outcome"] = "grace_expired"
+
+    return observation
+
 
 async def _wait_job(result: BridgeResult) -> BridgeResult:
-    """Traitement long : QGIS a répondu tout de suite avec un job_id (son interface reste
-    libre) ; c'est ici qu'on attend, en interrogeant get_job_status. L'avancement part en
-    notifications de progression MCP si le client en demande. Annulation MCP ou délai
-    dépassé : le traitement est annulé dans QGIS."""
+    """Attend le résultat d'un job et transmet sa progression au client MCP.
+
+    En cas d'annulation de l'appel ou de dépassement du délai, demande
+    l'annulation dans QGIS puis observe sa fin pendant un délai borné.
+
+    L'expiration de ce second délai ne force pas l'arrêt du traitement :
+    le job peut rester actif et conserver son verrou dans QGIS.
+    """
+
     job_id, token = result.job_id, _progress_token()
     delay, deadline = POLL_FIRST_S, time.monotonic() + JOB_TIMEOUT_S
     try:
@@ -124,11 +199,49 @@ async def _wait_job(result: BridgeResult) -> BridgeResult:
                     token, status["progress"], 100.0,
                     f"Étape {status['step']} : {status['algorithm']}")
     except (asyncio.CancelledError, TimeoutError) as exc:
-        with anyio.CancelScope(shield=True), contextlib.suppress(BridgeError):
-            await _client.call("cancel_job", {"job_id": job_id})
+        try:
+            observation = await _cancel_and_observe(job_id)
+        except asyncio.CancelledError:
+            logger.warning(
+                "Observation de l'annulation interrompue pour le job %s ; "
+                "arrêt non confirmé.",
+                job_id,
+            )
+            raise
         if isinstance(exc, TimeoutError):
-            raise BridgeError("TIMEOUT", f"Traitement non terminé après "
-                              f"{JOB_TIMEOUT_S / 60:.0f} min : annulé dans QGIS.") from exc
+            outcome = observation["outcome"]
+
+            if outcome == "cancelled":
+                message = "Annulation confirmée par QGIS."
+            elif outcome == "completed":
+                message = (
+                    "Le traitement s'est terminé pendant la demande "
+                    "d'annulation ; consulter les détails."
+                )
+            elif outcome == "observation_error":
+                message = (
+                    "Une erreur a été reçue pendant la demande ou le suivi "
+                    "d'annulation. L'état terminal du job n'a pas pu être "
+                    "confirmé par cette observation ; consulter les détails."
+                )
+            else:
+                message = (
+                    "Arrêt non confirmé. Le traitement peut encore être "
+                    "actif dans QGIS et conserver le verrou."
+                )
+
+            raise BridgeError(
+                "TIMEOUT",
+                f"Le délai de {JOB_TIMEOUT_S / 60:.0f} min a été dépassé. "
+                f"{message}",
+                {"cancellation": observation},
+            ) from exc
+
+        logger.warning(
+            "Annulation de l'appel MCP pour le job %s : %s",
+            job_id,
+            json.dumps(observation, ensure_ascii=False, default=str),
+        )
         raise
     return result
 
