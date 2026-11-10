@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,7 +9,16 @@ from cynogis.bridge.protocol import PROTOCOL_VERSION, Response, decode_request
 from cynogis.core.audit import AuditLog
 from cynogis.core.dispatcher import Dispatcher, ToolResult
 from cynogis.core.errors import ErrorCode, ToolError
-from cynogis.core.jobs import AlgCall, Fetch, Pacer, Pause, PrepareLandcover, note, run_now
+from cynogis.core.jobs import (
+    AlgCall,
+    Fetch,
+    JobManager,
+    Pacer,
+    Pause,
+    PrepareLandcover,
+    note,
+    run_now,
+)
 from cynogis.core.landcover import PreparationConfig
 from cynogis.core.landcover_execution import PreparationCancelledError
 from cynogis.core.policy import PermissionPolicy
@@ -605,3 +615,28 @@ def test_obia_start_failure_releases_lock(tmp_path):
     assert response.error["code"] == "PROCESSING_FAILED"
     assert dispatcher.jobs.running is None
     assert published == []
+
+def test_cancel_all_continues_after_one_job_fails(caplog):
+    calls = []
+
+    first = SimpleNamespace(id="first")
+    second = SimpleNamespace(id="second")
+
+    def cancel(job, reason):
+        calls.append((job.id, reason))
+        if job.id == "first":
+            raise RuntimeError("Handle indisponible")
+
+    manager = SimpleNamespace(
+        _jobs={"first": first, "second": second},
+        cancel=cancel,
+    )
+
+    JobManager.cancel_all(manager, "Déchargement du plugin.")
+
+    assert calls == [
+        ("first", "Déchargement du plugin."),
+        ("second", "Déchargement du plugin."),
+    ]
+    assert "annulation du job first" in caplog.text
+    assert "Handle indisponible" in caplog.text

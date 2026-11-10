@@ -10,6 +10,7 @@ from .bridge.connection import new_token, remove_connection_file, write_connecti
 from .bridge.server import HOST, BridgeServer
 from .compat import QAction
 from .core.audit import AuditLog
+from .core.cleanup import CleanupStep, run_cleanup_steps
 from .core.dispatcher import Dispatcher
 from .core.log import setup_logging, teardown_logging
 from .core.policy import PermissionPolicy
@@ -67,6 +68,8 @@ class CynogisPlugin:
         self._bridge: BridgeServer | None = None
         self._token: str | None = None
         self._log_handler = setup_logging()
+        self._unloading = False
+        self._unload_failures: list[str] = []
         registry = ToolRegistry()
         for module in TOOL_MODULES:
             registry.register_module(module)
@@ -95,17 +98,75 @@ class CynogisPlugin:
         project.layersWillBeRemoved.connect(self._cancel_jobs)
 
     def unload(self) -> None:
+        """Démonte les ressources du plugin sans attendre les tâches actives.
+
+        Une demande d'annulation ne confirme pas leur arrêt.
+        Les échecs de nettoyage sont conservés et journalisés.
+        """
+        if self._unloading:
+            return
+
+        self._unloading = True
         project = QgsProject.instance()
-        project.aboutToBeCleared.disconnect(self._cancel_jobs)
-        project.layersWillBeRemoved.disconnect(self._cancel_jobs)
-        self._cancel_jobs()
-        self._stop_bridge()
-        if self._action is not None:
-            self.iface.removeToolBarIcon(self._action)
-            self.iface.removePluginMenu(MENU, self._action)
-            self._action.deleteLater()
-            self._action = None
-        teardown_logging(self._log_handler)
+        action = self._action
+
+        steps: list[CleanupStep] = [
+            (
+                "déconnexion du signal aboutToBeCleared",
+                lambda: project.aboutToBeCleared.disconnect(self._cancel_jobs),
+            ),
+            (
+                "déconnexion du signal layersWillBeRemoved",
+                lambda: project.layersWillBeRemoved.disconnect(self._cancel_jobs),
+            ),
+            # Ne plus accepter de nouvelles requêtes avant d'annuler.
+            ("arrêt du pont", self._stop_bridge),
+            ("demande d'annulation des jobs", self._cancel_jobs),
+        ]
+
+        if action is not None:
+            steps.extend([
+                (
+                    "retrait de l'icône de barre d'outils",
+                    lambda: self.iface.removeToolBarIcon(action),
+                ),
+                (
+                    "retrait de l'entrée de menu",
+                    lambda: self.iface.removePluginMenu(MENU, action),
+                ),
+                (
+                    "suppression différée de l'action",
+                    lambda: action.deleteLater(),
+                ),
+            ])
+
+        failures = run_cleanup_steps(steps)
+        self._action = None
+
+        # Conserver uniquement des textes : ne pas retenir les tracebacks
+        # et leurs références d'objets dans l'instance.
+        self._unload_failures = [
+            f"{label} : {type(error).__name__} : {error}"
+            for label, error in failures
+        ]
+
+        if failures:
+            logger.error(
+                "Déchargement Cynogis incomplet : %s",
+                " ; ".join(self._unload_failures),
+            )
+
+        log_failures = run_cleanup_steps([
+            (
+                "arrêt de la journalisation du plugin",
+                lambda: teardown_logging(self._log_handler),
+            ),
+        ])
+
+        self._unload_failures.extend(
+            f"{label} : {type(error).__name__} : {error}"
+            for label, error in log_failures
+        )
 
     # --- Pont -------------------------------------------------------------
     def _on_toggled(self, checked: bool) -> None:
@@ -116,6 +177,11 @@ class CynogisPlugin:
 
     def _start_bridge(self) -> None:
         if self._bridge is not None:
+            return
+        if self._unloading:
+            logger.warning(
+                "Démarrage du pont refusé : déchargement du plugin en cours."
+            )
             return
         token = new_token()
         bridge = BridgeServer(self._dispatcher, token, parent=self.iface.mainWindow())
@@ -132,14 +198,42 @@ class CynogisPlugin:
         self._notify(f"Serveur démarré (port {bridge.port})", Qgis.MessageLevel.Success)
 
     def _stop_bridge(self) -> None:
-        if self._bridge is None:
+        bridge = self._bridge
+        token = self._token
+
+        if bridge is None and token is None:
             return
-        self._bridge.stop()
-        self._bridge.deleteLater()
+
+        # Détacher les références de l'instance avant les appels,
+        # pour éviter une réentrance sur les mêmes ressources.
         self._bridge = None
-        if self._token:
-            remove_connection_file(self._token)
-            self._token = None
+        self._token = None
+
+        steps: list[CleanupStep] = []
+
+        if bridge is not None:
+            steps.extend([
+                ("arrêt du serveur TCP", lambda: bridge.stop()),
+                (
+                    "suppression différée du serveur TCP",
+                    lambda: bridge.deleteLater(),
+                ),
+            ])
+
+        if token is not None:
+            steps.append((
+                "suppression du fichier de connexion",
+                lambda: remove_connection_file(token),
+            ))
+
+        failures = run_cleanup_steps(steps)
+
+        if failures:
+            labels = ", ".join(label for label, _error in failures)
+            raise RuntimeError(
+                f"Arrêt du pont incomplet : {labels}."
+            ) from failures[0][1]
+
         self._notify("Serveur arrêté", Qgis.MessageLevel.Info)
 
     def _cancel_jobs(self, *_args) -> None:
@@ -157,6 +251,8 @@ class CynogisPlugin:
 
     def _notify(self, message: str, level: Qgis.MessageLevel) -> None:
         logger.info(message)
+        if self._unloading:
+            return
         self.iface.messageBar().pushMessage("Cynogis", message, level=level, duration=5)
 
     def _load_palettes(self) -> None:

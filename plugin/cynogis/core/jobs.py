@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from .cleanup import run_cleanup_steps
 from .errors import ErrorCode, ToolError
 from .landcover import PreparationConfig
 from .landcover_execution import PreparationCancelledError
@@ -246,8 +247,14 @@ class JobManager:
 
 
     def cancel_all(self, reason: str) -> None:
-        for job in list(self._jobs.values()):
-            self.cancel(job, reason)
+        """Tente l'annulation de chaque job sans abandonner au premier échec."""
+        run_cleanup_steps(
+            (
+                f"annulation du job {job.id}",
+                lambda job=job: self.cancel(job, reason),
+            )
+            for job in list(self._jobs.values())
+        )
 
     # --- Déroulement ---------------------------------------------------------------------
     def _launch(self, job: Job, step: Any) -> None:
