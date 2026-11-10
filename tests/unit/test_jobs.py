@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -7,7 +8,9 @@ from cynogis.bridge.protocol import PROTOCOL_VERSION, Response, decode_request
 from cynogis.core.audit import AuditLog
 from cynogis.core.dispatcher import Dispatcher, ToolResult
 from cynogis.core.errors import ErrorCode, ToolError
-from cynogis.core.jobs import AlgCall, Fetch, Pacer, Pause, note, run_now
+from cynogis.core.jobs import AlgCall, Fetch, Pacer, Pause, PrepareLandcover, note, run_now
+from cynogis.core.landcover import PreparationConfig
+from cynogis.core.landcover_execution import PreparationCancelledError
 from cynogis.core.policy import PermissionPolicy
 from cynogis.core.registry import Level, ToolRegistry, tool
 from cynogis.core.schema import Param
@@ -408,3 +411,173 @@ def test_catalogue_relu_seulement_si_le_pont_change(app, monkeypatch, tmp_path):
     assert asyncio.run(app._fetch_specs()) == [{"name": "t1"}] and client.calls == 1
     client.conn = {"port": 1, "token": "b"}  # pont redémarré
     assert asyncio.run(app._fetch_specs()) == [{"name": "t2"}] and client.calls == 2
+
+def make_obia(tmp_path):
+    dispatcher, executor, audit = make(tmp_path)
+    published = []
+
+    @tool(level=Level.CREATE)
+    def obia_prepare_test():
+        """Outil factice de préparation OBIA."""
+        result = yield PrepareLandcover(
+            raster_path=Path("source.tif"),
+            aoi_wkb=b"test-only",
+            aoi_crs_wkt="test-only",
+            rgb_bands=(1, 2, 3),
+            output_parent=tmp_path,
+            config=PreparationConfig(
+                validity_policy="respect_source_masks",
+            ),
+        )
+        published.append(result)
+        return result
+
+    dispatcher.registry.register(obia_prepare_test)
+    return dispatcher, executor, audit, published
+
+
+def test_obia_job_success(tmp_path):
+    dispatcher, executor, _, published = make_obia(tmp_path)
+
+    response = dispatcher.dispatch(_req("obia_prepare_test"))
+    assert response.job_id
+    assert isinstance(executor.started[0][0], PrepareLandcover)
+
+    report = {"status": "complete", "output_directory": "test-output"}
+    executor.finish(report)
+
+    final = dispatcher.dispatch(
+        _req("get_job_status", job_id=response.job_id)
+    )
+    assert final.ok
+    assert final.data == report
+    assert published == [report]
+    assert dispatcher.jobs.running is None
+
+
+def test_obia_cancel_waits_for_worker(tmp_path):
+    dispatcher, executor, _, published = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+
+    response = dispatcher.dispatch(_req("cancel_job", job_id=job_id))
+
+    assert response.data["status"] == "running"
+    assert response.data["cancellation_requested"] is True
+    assert dispatcher.jobs.running is not None
+    assert executor.cancelled == [1]
+
+    # Une lecture simple reste possible.
+    assert dispatcher.dispatch(_req("lecture")).data == "ok"
+
+    # Une écriture reste bloquée.
+    blocked = dispatcher.dispatch(_req("calcul", n=1))
+    assert blocked.error["code"] == "BUSY"
+
+    # Même un outil READ ne doit pas démarrer un deuxième générateur.
+    blocked_read_job = dispatcher.dispatch(_req("telechargement"))
+    assert blocked_read_job.error["code"] == "BUSY"
+
+    executor.finish(error=PreparationCancelledError("Arrêt confirmé."))
+
+    final = dispatcher.dispatch(_req("get_job_status", job_id=job_id))
+    assert final.error["code"] == "CANCELLED"
+    assert dispatcher.jobs.running is None
+    assert published == []
+
+    # Le verrou est libéré seulement après la confirmation.
+    assert dispatcher.dispatch(_req("calcul", n=2)).job_id
+
+
+def test_obia_repeated_cancel_is_idempotent(tmp_path):
+    dispatcher, executor, _, _ = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+
+    dispatcher.dispatch(_req("cancel_job", job_id=job_id))
+    dispatcher.dispatch(_req("cancel_job", job_id=job_id))
+
+    assert executor.cancelled == [1]
+    assert dispatcher.jobs.running is not None
+
+    executor.finish(error=PreparationCancelledError("Arrêt confirmé."))
+    assert dispatcher.jobs.running is None
+
+
+def test_obia_cleanup_failure_remains_failure(tmp_path):
+    dispatcher, executor, _, published = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+
+    dispatcher.dispatch(_req("cancel_job", job_id=job_id))
+
+    error = RuntimeError("Nettoyage incomplet : test-output")
+    error.__cause__ = PreparationCancelledError("Annulé.")
+    executor.finish(error=error)
+
+    final = dispatcher.dispatch(_req("get_job_status", job_id=job_id))
+
+    assert final.error["code"] == "INTERNAL_ERROR"
+    assert "Nettoyage incomplet" in final.error["message"]
+    assert dispatcher.jobs.get(job_id).status == "failed"
+    assert dispatcher.jobs.running is None
+    assert published == []
+
+
+def test_obia_late_cancellation_retains_complete_outputs(tmp_path):
+    dispatcher, executor, _, published = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+
+    dispatcher.dispatch(_req("cancel_job", job_id=job_id))
+    executor.finish({
+        "status": "complete",
+        "output_directory": "completed-output",
+    })
+
+    final = dispatcher.dispatch(_req("get_job_status", job_id=job_id))
+
+    assert final.error["code"] == "CANCELLED"
+    assert final.error["details"] == {
+        "retained_output_directory": "completed-output",
+        "outputs_loaded": False,
+    }
+    assert published == []
+    assert dispatcher.jobs.running is None
+
+
+def test_obia_qgis_cancel_without_cancel_job(tmp_path):
+    dispatcher, executor, _, published = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+
+    executor.finish(
+        error=PreparationCancelledError("Annulation depuis QGIS.")
+    )
+
+    final = dispatcher.dispatch(_req("get_job_status", job_id=job_id))
+
+    assert final.error["code"] == "CANCELLED"
+    assert dispatcher.jobs.get(job_id).status == "cancelled"
+    assert published == []
+
+
+def test_obia_duplicate_callback_does_not_publish_twice(tmp_path):
+    dispatcher, executor, audit, published = make_obia(tmp_path)
+    dispatcher.dispatch(_req("obia_prepare_test"))
+
+    callback = executor.started[-1][1]
+    report = {"status": "complete"}
+
+    callback(report, None)
+    callback(report, None)
+
+    assert published == [report]
+    assert len(audit.recent(10)) == 1
+
+
+def test_obia_start_failure_releases_lock(tmp_path):
+    dispatcher, executor, _, published = make_obia(tmp_path)
+    executor.fail_start = True
+
+    response = dispatcher.dispatch(_req("obia_prepare_test"))
+
+    assert not response.ok
+    assert response.error["code"] == "PROCESSING_FAILED"
+    assert dispatcher.jobs.running is None
+    assert published == []

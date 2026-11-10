@@ -40,7 +40,8 @@ from qgis.PyQt.QtNetwork import QNetworkRequest
 
 from ..compat import EXCLUDE_USER_INPUT
 from ..core.errors import ErrorCode, ToolError
-from ..core.jobs import AlgCall, Done, Fetch
+from ..core.jobs import AlgCall, Done, Fetch, PrepareLandcover
+from .landcover_tasks import LandcoverPreparationTask
 
 PUMP_INTERVAL_S = 0.1  # repli synchrone : repeindre l'interface au plus toutes les 100 ms
 logger = logging.getLogger("cynogis.tasks")
@@ -60,9 +61,24 @@ class ProcessingExecutor:
     def __init__(self) -> None:
         # La tâche garde des pointeurs vers context et feedback : les garder en vie jusqu'à
         # executed, même après une annulation.
-        self._active: set[_Handle] = set()
+        self._active: set[_Handle | _FetchTask | LandcoverPreparationTask] = set()
 
-    def start(self, step: AlgCall | Fetch, done: Done) -> _Handle | _FetchTask:
+    def start(self, step: AlgCall | Fetch | PrepareLandcover,
+              done: Done) -> _Handle | _FetchTask | LandcoverPreparationTask:
+        if isinstance(step, PrepareLandcover):
+            task = LandcoverPreparationTask(step, done, self._active.discard)
+            self._active.add(task)
+
+            try:
+                task_id = QgsApplication.taskManager().addTask(task)
+                if not task_id:
+                    raise RuntimeError("Impossible d'enregistrer la tâche OBIA.")
+            except Exception:
+                self._active.discard(task)
+                raise
+
+            return task
+
         if isinstance(step, Fetch):
             task = _FetchTask(step, done, self._active.discard)
             self._active.add(task)  # garder l'objet Python de la tâche jusqu'à finished
@@ -89,13 +105,21 @@ class ProcessingExecutor:
             QgsApplication.taskManager().addTask(task)
         return handle
 
-    def progress(self, handle: _Handle | _FetchTask | None) -> float:
+    def progress(self, handle: _Handle | _FetchTask | LandcoverPreparationTask | None) -> float:
+        if isinstance(handle, LandcoverPreparationTask):
+            return float(handle.progress())
+
         return float(handle.feedback.progress()) if handle is not None else 0.0
 
     def pause(self, resume: Callable[[], None]) -> None:
         QTimer.singleShot(0, resume)  # après l'affichage et les requêtes en attente
 
-    def cancel(self, handle: _Handle | _FetchTask | None) -> None:
+    def cancel(self, handle: _Handle | _FetchTask | LandcoverPreparationTask | None) -> None:
+        if isinstance(handle, LandcoverPreparationTask):
+            # Ne pas ignorer finished(): son rappel confirme l'arrêt réel.
+            handle.cancel()
+            return
+
         if handle is not None and not handle.cancelled:
             handle.cancelled = True
             handle.feedback.cancel()  # la tâche s'arrête et se termine en échec

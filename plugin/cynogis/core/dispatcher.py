@@ -120,6 +120,14 @@ class Dispatcher:
                    finish: Any, notes: Counter[str]) -> Response:
         """Outil générateur : le code jusqu'à la première étape Processing s'exécute ici ;
         la suite devient un job et la réponse part tout de suite avec son job_id."""
+        active = self.jobs.running if self.jobs is not None else None
+        if active is not None and active.wait_for_stop:
+            generator.close()
+            raise ToolError(
+                ErrorCode.BUSY,
+                f"Le traitement {active.tool} est encore actif "
+                f"(job {active.id}). Attendre son arrêt effectif.",
+            )
         try:
             with collecting(notes):
                 first = next(generator)

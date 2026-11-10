@@ -21,9 +21,12 @@ from collections import Counter
 from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from .errors import ErrorCode, ToolError
+from .landcover import PreparationConfig
+from .landcover_execution import PreparationCancelledError
 
 RUNNING, DONE, FAILED, CANCELLED = "running", "done", "failed", "cancelled"
 KEEP_FINISHED = 20  # jobs terminés gardés pour get_job_status
@@ -48,6 +51,21 @@ class Fetch:
     label: str = "téléchargement"
     geojson: bool = False
 
+@dataclass(frozen=True)
+class PrepareLandcover:
+    """Préparation OBIA exécutée hors du thread principal.
+
+    Uniquement des chemins, des valeurs et une copie WKB du périmètre.
+    Aucun objet QGIS ne doit être transmis.
+    """
+
+    raster_path: Path
+    aoi_wkb: bytes
+    aoi_crs_wkt: str
+    rgb_bands: tuple[int, int, int]
+    output_parent: Path
+    config: PreparationConfig
+    label: str = "Préparation des entrées OBIA"
 
 @dataclass(frozen=True)
 class Pause:
@@ -114,14 +132,14 @@ def render_notes(notes: Counter[str]) -> list[str]:
     return [template.format(n=n) for template, n in notes.items()]
 
 
-Step = AlgCall | Fetch | Pause
+Step = AlgCall | Fetch | Pause | PrepareLandcover
 # Type de retour des outils et helpers qui cèdent des étapes (appel avec « yield from »).
 Steps = Generator[Step, Any, Any]
 Done = Callable[[Any, "BaseException | None"], None]  # (résultats, erreur)
 
 
 class Executor(Protocol):
-    def start(self, step: AlgCall | Fetch, done: Done) -> Any:
+    def start(self, step: AlgCall | Fetch | PrepareLandcover, done: Done) -> Any:
         """Lance l'étape et renvoie un handle ; done est appelé une fois, sur le thread
         principal, après le retour de start."""
         ...
@@ -155,6 +173,8 @@ class Job:
     notes: Counter[str] = field(default_factory=Counter)  # note() du générateur
     started: float = field(default_factory=time.monotonic)
     finished: float | None = None
+    wait_for_stop: bool = False
+    cancellation_reason: str | None = None
 
 
 class JobManager:
@@ -191,17 +211,39 @@ class JobManager:
             progress = self.executor.progress(job.handle)
         else:
             progress = job.progress or 0.0
-        return {"job_id": job.id, "tool": job.tool, "status": job.status, "step": job.step,
-                "algorithm": job.algorithm, "progress": round(progress, 1),
-                "elapsed_s": round((job.finished or time.monotonic()) - job.started, 1)}
+        return {
+            "job_id": job.id,
+            "tool": job.tool,
+            "status": job.status,
+            "step": job.step,
+            "algorithm": job.algorithm,
+            "progress": round(progress, 1),
+            "elapsed_s": round((job.finished or time.monotonic()) - job.started, 1),
+            "cancellation_requested": job.cancellation_reason is not None,
+        }
 
     def cancel(self, job: Job, reason: str = "Traitement annulé.") -> None:
         if job.status != RUNNING:
             return
-        job.status = CANCELLED  # avant tout : un rappel tardif de l'exécuteur sera ignoré
+
+        if job.wait_for_stop:
+            if job.cancellation_reason is not None:
+                return
+
+            job.cancellation_reason = reason
+            try:
+                self.executor.cancel(job.handle)
+            except Exception:
+                job.cancellation_reason = None
+                raise
+
+            return
+
+        job.status = CANCELLED
         self.executor.cancel(job.handle)
         job.generator.close()
         self._finish(job, None, ToolError(ErrorCode.CANCELLED, reason), CANCELLED)
+
 
     def cancel_all(self, reason: str) -> None:
         for job in list(self._jobs.values()):
@@ -209,24 +251,66 @@ class JobManager:
 
     # --- Déroulement ---------------------------------------------------------------------
     def _launch(self, job: Job, step: Any) -> None:
+        job.wait_for_stop = isinstance(step, PrepareLandcover)
+
         if isinstance(step, Pause):
             job.algorithm, job.progress, job.handle = step.label, step.progress, None
             self.executor.pause(lambda: self._advance(job, None, None))
             return
-        if not isinstance(step, (AlgCall, Fetch)):
+
+        if not isinstance(step, (AlgCall, Fetch, PrepareLandcover)):
             self._advance(job, None, TypeError(f"Étape inattendue : {step!r}"))
             return
+
         job.step += 1
         job.algorithm = step.algorithm_id if isinstance(step, AlgCall) else step.label
         job.progress = None
+
         try:
-            job.handle = self.executor.start(step, lambda v, e: self._advance(job, v, e))
-        except Exception as exc:  # algorithme introuvable, paramètres refusés…
+            job.handle = self.executor.start(
+                step,
+                lambda value, error: self._advance(job, value, error),
+            )
+        except Exception as exc:
             self._advance(job, None, exc)
 
     def _advance(self, job: Job, value: Any, error: BaseException | None) -> None:
         if job.status != RUNNING:
             return
+
+        if job.wait_for_stop:
+            cancellation = isinstance(error, PreparationCancelledError)
+            requested = job.cancellation_reason is not None
+
+            if cancellation or (requested and error is None):
+                reason = (
+                    job.cancellation_reason
+                    if requested
+                    else str(error)
+                )
+                details = None
+
+                if isinstance(value, dict) and value.get("output_directory"):
+                    details = {
+                        "retained_output_directory": value["output_directory"],
+                        "outputs_loaded": False,
+                    }
+                    reason = (
+                        f"{reason} Des fichiers complets ont été conservés ; "
+                        "ils n'ont pas été chargés dans le projet."
+                    )
+
+                self._stop_landcover(
+                    job,
+                    ToolError(ErrorCode.CANCELLED, reason, details),
+                    CANCELLED,
+                )
+                return
+
+            if requested and error is not None:
+                self._stop_landcover(job, error, FAILED)
+                return
+
         try:
             with collecting(job.notes):
                 step = job.generator.throw(error) if error else job.generator.send(value)
@@ -246,3 +330,22 @@ class JobManager:
                           key=lambda j: j.finished or 0.0)
         for job in finished[:-KEEP_FINISHED]:
             del self._jobs[job.id]
+
+    def _stop_landcover(
+            self,
+            job: Job,
+            error: BaseException,
+            status: str,
+    ) -> None:
+        """Termine sans reprendre le code de publication du générateur."""
+        try:
+            with collecting(job.notes):
+                job.generator.close()
+        except Exception as close_error:
+            combined = RuntimeError(
+                f"{error} ; fermeture du générateur impossible : {close_error}"
+            )
+            combined.__cause__ = error
+            self._finish(job, None, combined, FAILED)
+        else:
+            self._finish(job, None, error, status)
