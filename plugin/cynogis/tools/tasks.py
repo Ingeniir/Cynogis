@@ -41,6 +41,7 @@ from qgis.PyQt.QtNetwork import QNetworkRequest
 from ..compat import EXCLUDE_USER_INPUT
 from ..core.errors import ErrorCode, ToolError
 from ..core.jobs import AlgCall, Done, Fetch, PrepareLandcover
+from .landcover_guard import acquire_landcover_guard
 from .landcover_tasks import LandcoverPreparationTask
 
 PUMP_INTERVAL_S = 0.1  # repli synchrone : repeindre l'interface au plus toutes les 100 ms
@@ -66,18 +67,31 @@ class ProcessingExecutor:
     def start(self, step: AlgCall | Fetch | PrepareLandcover,
               done: Done) -> _Handle | _FetchTask | LandcoverPreparationTask:
         if isinstance(step, PrepareLandcover):
-            task = LandcoverPreparationTask(step, done, self._active.discard)
-            self._active.add(task)
+            release_guard = acquire_landcover_guard()
+            task = None
+
+            def forget(completed: LandcoverPreparationTask) -> None:
+                self._active.discard(completed)
+                release_guard()
 
             try:
+                task = LandcoverPreparationTask(step, done, forget)
+                self._active.add(task)
+
                 task_id = QgsApplication.taskManager().addTask(task)
                 if not task_id:
-                    raise RuntimeError("Impossible d'enregistrer la tâche OBIA.")
+                    raise RuntimeError(
+                        "Impossible d'enregistrer la tâche OBIA."
+                    )
+
             except Exception:
-                self._active.discard(task)
+                if task is not None:
+                    self._active.discard(task)
+                release_guard()
                 raise
 
             return task
+
 
         if isinstance(step, Fetch):
             task = _FetchTask(step, done, self._active.discard)

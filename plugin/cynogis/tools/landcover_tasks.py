@@ -64,7 +64,35 @@ class LandcoverPreparationTask(QgsTask):
             return
 
         self._delivered = True
-        self.forget(self)
+
+        try:
+            self.forget(self)
+        except Exception as cleanup_error:
+            previous_error = self.error
+
+            message = (
+                "Échec de la finalisation de la tâche OBIA "
+                "(retrait du suivi ou libération du verrou) : "
+                f"{type(cleanup_error).__name__} : {cleanup_error}"
+            )
+
+            if previous_error is not None:
+                message += (
+                    " ; erreur initiale du traitement : "
+                    f"{type(previous_error).__name__} : {previous_error}"
+                )
+
+            finalization_error = RuntimeError(message)
+
+            # Garder l'erreur initiale comme cause lorsqu'elle existe.
+            # Sinon, conserver l'erreur de finalisation elle-même.
+            finalization_error.__cause__ = (
+                previous_error
+                if previous_error is not None
+                else cleanup_error
+            )
+
+            self.error = finalization_error
 
         # Une erreur technique reste prioritaire sur le drapeau d'annulation.
         if self.error is not None:
