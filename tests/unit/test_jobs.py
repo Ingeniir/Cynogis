@@ -11,11 +11,13 @@ from cynogis.core.dispatcher import Dispatcher, ToolResult
 from cynogis.core.errors import ErrorCode, ToolError
 from cynogis.core.jobs import (
     AlgCall,
+    DetachedJobOutcome,
     Fetch,
     JobManager,
     Pacer,
     Pause,
     PrepareLandcover,
+    _finish_detached_job,
     note,
     run_now,
 )
@@ -640,3 +642,288 @@ def test_cancel_all_continues_after_one_job_fails(caplog):
     ]
     assert "annulation du job first" in caplog.text
     assert "Handle indisponible" in caplog.text
+
+
+# --- Détachement des finisseurs (déchargement du plugin) ---------------------------------
+# Tests avec doubles (FakeExecutor) : aucune vraie QgsTask.
+def _spy_manager():
+    executor = FakeExecutor()
+    manager = JobManager(executor)
+    calls = []
+
+    def finisher(result, error):
+        calls.append((result, error))
+        return ("réponse normale", result, error)
+
+    def generator():
+        value = yield AlgCall("native:a", {})
+        return {"fin": value}
+
+    gen = generator()
+    job = manager.start("outil", gen, next(gen), finisher)
+    return manager, executor, job, calls
+
+
+def test_sans_detachement_le_finisseur_normal_est_appele():
+    _, executor, job, calls = _spy_manager()
+
+    executor.finish({"OUTPUT": 1})
+
+    assert calls == [({"fin": {"OUTPUT": 1}}, None)]
+    assert job.response == ("réponse normale", {"fin": {"OUTPUT": 1}}, None)
+    assert job.status == "done"
+
+
+def test_apres_detachement_le_finisseur_n_est_plus_appele():
+    manager, executor, job, calls = _spy_manager()
+
+    manager.detach_finishers()
+    executor.finish({"OUTPUT": 1})
+
+    assert calls == []
+    assert isinstance(job.response, DetachedJobOutcome)
+    # Le générateur n'est plus repris : fermé et clos en annulation, pas en succès.
+    assert job.status == "cancelled"
+    assert job.generator.gi_frame is None
+    assert job.handle is None and job.finished is not None
+
+
+def test_terminaison_detachee_sans_nouvel_audit(tmp_path):
+    dispatcher, executor, audit = make(tmp_path)
+    job_id = dispatcher.dispatch(_req("calcul", n=1)).job_id
+    assert audit.recent(10) == []
+
+    dispatcher.jobs.detach_finishers()
+    executor.finish({"OUTPUT": 1})
+    executor.finish({"OUTPUT": 2})
+
+    job = dispatcher.jobs.get(job_id)
+    assert job.status == "cancelled"  # la seconde étape n'est jamais lancée
+    assert len(executor.started) == 1
+    assert isinstance(job.response, DetachedJobOutcome)
+    assert audit.recent(10) == []
+
+
+def test_detachement_ne_demande_aucune_annulation_ni_ne_change_le_statut(tmp_path):
+    dispatcher, executor, _, _ = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+    job = dispatcher.jobs.get(job_id)
+
+    dispatcher.jobs.detach_finishers()
+
+    assert executor.cancelled == []
+    assert job.cancellation_reason is None
+    assert job.status == "running"
+    assert dispatcher.jobs.running is job
+    assert job.response is None
+
+
+def test_callbacks_de_terminaison_restent_raccordes(tmp_path):
+    dispatcher, executor, _, published = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+    callback = executor.started[-1][1]
+
+    dispatcher.jobs.detach_finishers()
+    report = {"status": "complete", "output_directory": "sortie"}
+    callback(report, None)  # même callback que celui confié à l'exécuteur
+
+    job = dispatcher.jobs.get(job_id)
+    assert job.status == "cancelled"
+    assert dispatcher.jobs.running is None
+    assert published == []  # après détachement, la publication est interdite
+    assert job.response.retained_output_directory == "sortie"
+    assert job.response.error_code == "CANCELLED"
+    assert job.generator.gi_frame is None
+    assert job.handle is None
+
+
+def test_succes_detache_sans_sortie_complete():
+    manager, executor, job, calls = _spy_manager()
+    manager.detach_finishers()
+    executor.finish({"OUTPUT": 1})
+    assert job.response.retained_output_directory is None
+    assert calls == []
+
+
+def test_echec_de_fermeture_detache_reste_un_echec_technique():
+    executor = FakeExecutor()
+    manager = JobManager(executor)
+    calls = []
+
+    def generator():
+        try:
+            yield AlgCall("native:a", {})
+        except GeneratorExit:
+            raise RuntimeError("fermeture refusée") from None
+
+    gen = generator()
+    job = manager.start("outil", gen, next(gen), lambda r, e: calls.append((r, e)))
+    manager.detach_finishers()
+    executor.finish({"output_directory": "sortie"})
+
+    assert job.status == "failed"
+    assert calls == []
+    assert job.response.error_type == "RuntimeError"
+    assert job.response.error_code is None
+    assert job.response.cause_type == "ToolError"
+    assert "fermeture du générateur impossible" in job.response.error_message
+    # Le détail structuré vient de la cause ToolError, pas du message.
+    assert job.response.retained_output_directory == "sortie"
+
+
+def test_callback_tardif_detache_ne_finalise_pas_deux_fois(tmp_path):
+    dispatcher, executor, audit, published = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+    callback = executor.started[-1][1]
+    dispatcher.jobs.detach_finishers()
+
+    callback({"status": "complete", "output_directory": "sortie"}, None)
+    job = dispatcher.jobs.get(job_id)
+    response, finished = job.response, job.finished
+
+    callback(None, RuntimeError("callback tardif"))
+    callback({"output_directory": "autre"}, None)
+
+    assert job.response is response and job.finished == finished
+    assert job.status == "cancelled"
+    assert published == []
+    assert audit.recent(10) == []
+
+
+def test_annulation_obia_detachee_attend_le_callback_reel(tmp_path):
+    dispatcher, executor, audit, published = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+    job = dispatcher.jobs.get(job_id)
+
+    dispatcher.jobs.detach_finishers()
+    dispatcher.jobs.cancel_all("Déchargement du plugin.")
+
+    assert executor.cancelled == [1]
+    assert job.status == "running"
+    assert job.response is None
+    assert dispatcher.jobs.running is job
+
+    executor.finish(error=PreparationCancelledError("Arrêt confirmé."))
+
+    assert job.status == "cancelled"
+    assert job.response.error_code == "CANCELLED"
+    assert job.response.error_type == "ToolError"
+    assert published == []
+    assert audit.recent(10) == []
+
+
+def test_erreur_technique_detachee_reste_un_echec(tmp_path):
+    dispatcher, executor, audit, published = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+    job = dispatcher.jobs.get(job_id)
+
+    dispatcher.jobs.detach_finishers()
+    dispatcher.jobs.cancel_all("Déchargement du plugin.")
+    error = RuntimeError("Préparation échouée ; nettoyage incomplet de residu : bloqué")
+    error.__cause__ = PreparationCancelledError("Annulé.")
+    executor.finish(error=error)
+
+    assert job.status == "failed"
+    assert job.response.error_type == "RuntimeError"
+    assert job.response.error_code is None
+    assert job.response.cause_type == "PreparationCancelledError"
+    # Le chemin n'existe que dans le texte du message : aucun répertoire déduit.
+    assert job.response.residual_directory is None
+    assert job.response.retained_output_directory is None
+    assert published == []
+    assert audit.recent(10) == []
+
+
+def test_double_detachement_sans_effet_supplementaire(tmp_path):
+    dispatcher, executor, _, _ = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+    job = dispatcher.jobs.get(job_id)
+
+    dispatcher.jobs.detach_finishers()
+    finisher = job.finisher
+    dispatcher.jobs.detach_finishers()
+
+    assert job.finisher is finisher
+    assert executor.cancelled == []
+    assert job.status == "running"
+
+
+def test_start_refuse_sur_un_gestionnaire_detache(tmp_path):
+    manager = JobManager(FakeExecutor())
+    manager.detach_finishers()
+
+    def generator():
+        yield AlgCall("native:a", {})
+
+    gen = generator()
+    with pytest.raises(ToolError) as caught:
+        manager.start("outil", gen, next(gen), lambda r, e: None)
+    assert caught.value.code == ErrorCode.BUSY
+    assert manager.running is None
+    assert manager.executor.started == []
+
+    dispatcher, executor, _ = make(tmp_path)
+    dispatcher.jobs.detach_finishers()
+    response = dispatcher.dispatch(_req("calcul", n=1))
+    assert response.error["code"] == "BUSY"
+    assert executor.started == []
+
+
+# --- DetachedJobOutcome : détails structurés uniquement ----------------------------------
+def test_outcome_annulation_tardive_conserve_le_repertoire():
+    error = ToolError(ErrorCode.CANCELLED, "Annulé.",
+                      {"retained_output_directory": "complet", "outputs_loaded": False})
+    outcome = _finish_detached_job(None, error)
+    assert outcome == DetachedJobOutcome(
+        error_type="ToolError", error_code="CANCELLED", error_message="Annulé.",
+        cause_type=None, retained_output_directory="complet", residual_directory=None)
+
+
+def test_outcome_runtime_error_causee_par_tool_error():
+    cause = ToolError(ErrorCode.CANCELLED, "Annulé.",
+                      {"retained_output_directory": "complet",
+                       "residual_directory": "residu"})
+    error = RuntimeError("Annulé. ; fermeture du générateur impossible : x")
+    error.__cause__ = cause
+    outcome = _finish_detached_job(None, error)
+    assert outcome.error_type == "RuntimeError"
+    assert outcome.error_code is None
+    assert outcome.cause_type == "ToolError"
+    assert outcome.retained_output_directory == "complet"
+    assert outcome.residual_directory == "residu"
+
+
+def test_outcome_details_de_l_erreur_principale_prioritaires():
+    error = ToolError(ErrorCode.PROCESSING_FAILED, "échec",
+                      {"retained_output_directory": "principal"})
+    error.__cause__ = ToolError(ErrorCode.CANCELLED, "cause",
+                                {"retained_output_directory": "cause",
+                                 "residual_directory": "residu-cause"})
+    outcome = _finish_detached_job(None, error)
+    assert outcome.error_code == "PROCESSING_FAILED"
+    assert outcome.retained_output_directory == "principal"
+    assert outcome.residual_directory == "residu-cause"
+
+
+def test_outcome_rejette_les_chemins_non_textuels():
+    error = ToolError(ErrorCode.CANCELLED, "x",
+                      {"retained_output_directory": Path("p"), "residual_directory": 3})
+    outcome = _finish_detached_job({"output_directory": ["liste"]}, error)
+    assert outcome.retained_output_directory is None
+    assert outcome.residual_directory is None
+
+
+def test_outcome_repli_sur_le_resultat():
+    outcome = _finish_detached_job({"output_directory": "resultat"}, None)
+    assert outcome == DetachedJobOutcome(
+        error_type=None, error_code=None, error_message=None, cause_type=None,
+        retained_output_directory="resultat", residual_directory=None)
+
+
+def test_outcome_n_extrait_jamais_un_chemin_du_message():
+    error = RuntimeError("nettoyage incomplet de C:/residu : bloqué")
+    error.__cause__ = PreparationCancelledError("Annulé.")
+    outcome = _finish_detached_job({"output_directory": 1}, error)
+    assert outcome.residual_directory is None
+    assert outcome.retained_output_directory is None
+    assert all(not isinstance(v, BaseException) for v in vars(outcome).values())

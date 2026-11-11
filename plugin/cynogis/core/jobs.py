@@ -177,11 +177,60 @@ class Job:
     wait_for_stop: bool = False
     cancellation_reason: str | None = None
 
+@dataclass(frozen=True)
+class DetachedJobOutcome:
+    """Diagnostic d'un job dont le dispatcher a été détaché.
+
+    Ce résultat est interne : ce n'est pas une réponse du protocole MCP.
+    Il ne conserve ni l'objet exception, ni sa cause, ni leur traceback :
+    seulement des chaînes. Les répertoires viennent uniquement de
+    ToolError.details (erreur ou cause directe) ou du résultat, jamais
+    du texte d'un message.
+    """
+
+    error_type: str | None
+    error_code: str | None
+    error_message: str | None
+    cause_type: str | None
+    retained_output_directory: str | None
+    residual_directory: str | None
+
+
+def _detail_text(details: dict[str, Any], key: str) -> str | None:
+    value = details.get(key)
+    return value if isinstance(value, str) else None
+
+def _finish_detached_job(
+        result: Any,
+        error: BaseException | None,
+) -> DetachedJobOutcome:
+    """Conserve un diagnostic sans audit ni accès au dispatcher."""
+    cause = error.__cause__ if error is not None else None
+    details: dict[str, Any] = {}
+    # La cause d'abord : les détails de l'erreur elle-même priment.
+    for candidate in (cause, error):
+        if isinstance(candidate, ToolError) and isinstance(candidate.details, dict):
+            details.update(candidate.details)
+
+    retained = _detail_text(details, "retained_output_directory")
+    if retained is None and isinstance(result, dict):
+        retained = _detail_text(result, "output_directory")
+
+    return DetachedJobOutcome(
+        error_type=type(error).__name__ if error is not None else None,
+        error_code=error.code.value if isinstance(error, ToolError) else None,
+        error_message=str(error) if error is not None else None,
+        cause_type=type(cause).__name__ if cause is not None else None,
+        retained_output_directory=retained,
+        residual_directory=_detail_text(details, "residual_directory"),
+    )
+
 
 class JobManager:
     def __init__(self, executor: Executor) -> None:
         self.executor = executor
         self._jobs: dict[str, Job] = {}
+        self._finishers_detached = False
 
     @property
     def running(self) -> Job | None:
@@ -191,6 +240,12 @@ class JobManager:
               finisher: Finisher, notes: Counter[str] | None = None) -> Job:
         """Démarre un job dont le générateur vient de céder sa première étape ; notes
         reçoit les note() de la suite du générateur."""
+        if self._finishers_detached:
+            raise ToolError(
+                ErrorCode.BUSY,
+                "Ce gestionnaire de traitements est détaché "
+                "à la suite du déchargement du plugin"
+            )
         job = Job(uuid.uuid4().hex[:12], tool, generator, finisher,
                   notes=Counter() if notes is None else notes)
         self._jobs[job.id] = job
@@ -285,6 +340,10 @@ class JobManager:
         if job.status != RUNNING:
             return
 
+        if self._finishers_detached:
+            self._finish_detached_step(job, value, error)
+            return
+
         if job.wait_for_stop:
             cancellation = isinstance(error, PreparationCancelledError)
             requested = job.cancellation_reason is not None
@@ -356,3 +415,58 @@ class JobManager:
             self._finish(job, None, combined, FAILED)
         else:
             self._finish(job, None, error, status)
+
+    def detach_finishers(self) -> None:
+        """Détache définitivement les finisseurs du dispatcher.
+
+        N'annule pas les tâches et ne confirme pas leur arrêt.
+        Les callbacks de l'exécuteur restent raccordés au JobManager.
+        """
+        if self._finishers_detached:
+            return
+
+        self._finishers_detached = True
+
+        for job in self._jobs.values():
+            job.finisher = _finish_detached_job
+
+    def _finish_detached_step(
+            self,
+            job: Job,
+            value: Any,
+            error: BaseException | None,
+    ) -> None:
+        """Termine un job détaché sans reprendre normalement son générateur.
+
+        Appelée au retour de l'exécuteur, pas lors de la seule demande
+        d'annulation. Les fichiers déjà produits ne sont pas supprimés.
+        """
+        # Une erreur technique reste prioritaire sur l'abandon du job.
+        if error is not None and not isinstance(
+            error, PreparationCancelledError
+        ):
+            self._stop_landcover(job, error, FAILED)
+            return
+
+        details: dict[str, Any] = {}
+        if isinstance(value, dict):
+            directory = value.get("output_directory")
+            if isinstance(directory, str):
+                details["retained_output_directory"] = directory
+
+        reason = (
+            "Job abandonné après le détachement du gestionnaire ; "
+            "le générateur ne sera pas repris."
+        )
+        if details:
+            reason += " Les fichiers de sortie déjà produits sont conservés."
+
+        self._stop_landcover(
+            job,
+            ToolError(
+                ErrorCode.CANCELLED,
+                reason,
+                details or None,
+            ),
+            CANCELLED,
+        )

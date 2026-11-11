@@ -509,6 +509,69 @@ def test_plugin_unload_continues_and_keeps_errors():
         assert len(EVENTS) == count                         # second unload sans effet
 
 
+# --- Détachement des finisseurs : vrai CynogisPlugin, gestionnaire de jobs en double ------
+class RecordingJobs:
+    """Double du JobManager : enregistre l'ordre des appels dans EVENTS."""
+
+    def detach_finishers(self):
+        EVENTS.append(("detach_finishers",))
+
+    def cancel_all(self, reason):
+        EVENTS.append(("cancel_all", reason))
+
+
+def test_plugin_unload_detaches_finishers_before_cancelling():
+    with plugin_env() as plugin:
+        plugin._start_bridge()
+        bridge = plugin._bridge
+        plugin._dispatcher.jobs = RecordingJobs()
+        EVENTS.clear()
+        plugin.unload()
+        calls = [e[0] for e in EVENTS if e[0] in {"remove", "detach_finishers", "cancel_all"}]
+        assert calls == ["remove", "detach_finishers", "cancel_all"]
+        assert bridge.events[-2:] == ["stop", "deleteLater"]   # pont arrêté avant
+        assert plugin._unload_failures == []
+
+
+def test_plugin_unload_detaches_real_job_manager():
+    from cynogis.core.errors import ErrorCode, ToolError
+
+    with plugin_env() as plugin:
+        jobs = plugin._dispatcher.jobs                      # vrai JobManager, aucune tâche
+        plugin.unload()
+
+        def generator():
+            yield None
+
+        gen = generator()
+        try:
+            jobs.start("outil", gen, next(gen), lambda _r, _e: None)
+        except ToolError as exc:
+            assert exc.code == ErrorCode.BUSY
+        else:
+            raise AssertionError("start() aurait dû être refusé")
+        assert jobs.running is None
+
+
+def test_plugin_project_signals_cancel_without_detaching():
+    from qgis.core import QgsProject, QgsVectorLayer
+
+    with plugin_env() as plugin:
+        plugin._dispatcher.jobs = RecordingJobs()
+        project = QgsProject.instance()
+        layer = QgsVectorLayer("Point?crs=EPSG:2975", "cynogis_test", "memory")
+        assert layer.isValid()
+        project.addMapLayer(layer)
+        EVENTS.clear()
+
+        project.removeMapLayer(layer.id())                 # layersWillBeRemoved
+        assert [e[0] for e in EVENTS] == ["cancel_all"]
+
+        EVENTS.clear()
+        project.clear()                                     # aboutToBeCleared
+        assert [e[0] for e in EVENTS] == ["cancel_all"]
+
+
 if __name__ == "__main__":
     tests = [(name, fn) for name, fn in list(globals().items())
              if name.startswith("test_") and callable(fn)]

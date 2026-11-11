@@ -123,6 +123,10 @@ class CynogisPlugin:
             ),
             # Ne plus accepter de nouvelles requêtes avant d'annuler.
             ("arrêt du pont", self._stop_bridge),
+            (
+                "détachement des finisseurs des jobs",
+                self._detach_job_finishers,
+            ),
             ("demande d'annulation des jobs", self._cancel_jobs),
         ]
 
@@ -338,3 +342,9 @@ class CynogisPlugin:
             return
         if report["rejected"]:
             logger.warning("Palettes ignorées : %s", ", ".join(report["rejected"]))
+
+    def _detach_job_finishers(self) -> None:
+        """Empêche les terminaisons futures d'appeler l'ancien dispatcher."""
+        jobs = self._dispatcher.jobs
+        if jobs is not None:
+            jobs.detach_finishers()
