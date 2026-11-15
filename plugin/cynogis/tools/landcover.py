@@ -17,7 +17,8 @@ from qgis.core import (
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
-from ..core.landcover import validate_rgb_bands
+from ..core.jobs import PrepareLandcover, Steps
+from ..core.landcover import PreparationConfig, validate_rgb_bands
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
@@ -252,3 +253,176 @@ def inspect_landcover_inputs(
         "pixel_validity_checked": False,
         "model_checked": False,
     }, warnings)
+
+def _build_preparation_step(
+        raster_layer_id: str,
+        aoi_layer_id: str,
+        aoi_feature_id: int,
+        rgb_bands: list[int],
+        output_parent: str,
+        validity_policy: str,
+) -> tuple[PrepareLandcover, list[str]]:
+    """Capture les entrées sans transmettre d'objet QGIS à la tâche."""
+    try:
+        config = PreparationConfig(
+            validity_policy=validity_policy,
+            max_pixels=1_000_000,
+        )
+    except ValueError as exc:
+        raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
+
+    if not isinstance(output_parent, str) or not output_parent.strip():
+        _reject("Un dossier parent de sortie est obligatoire.")
+
+    try:
+        parent = Path(output_parent).expanduser()
+        if not parent.is_absolute():
+            _reject("Le dossier parent de sortie doit être un chemin absolu.")
+        parent = parent.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ToolError(
+            ErrorCode.INVALID_PARAMS,
+            "Impossible de résoudre le dossier parent de sortie.",
+        ) from exc
+
+    if not parent.is_dir():
+        _reject("Le dossier parent de sortie doit être un dossier existant.")
+
+    inspection = inspect_landcover_inputs(
+        raster_layer_id=raster_layer_id,
+        aoi_layer_id=aoi_layer_id,
+        aoi_feature_id=aoi_feature_id,
+        rgb_bands=rgb_bands,
+    )
+
+    raster = get_raster_layer(raster_layer_id)
+    aoi = get_vector_layer(aoi_layer_id)
+
+    if raster.crs() != aoi.crs():
+        _reject(
+            "Cette préparation native exige un périmètre déjà dans le "
+            "même SCR que le raster. Aucune projection automatique."
+        )
+
+    if inspection.data["requires_metric_working_crs"]:
+        _reject("Cette préparation exige un SCR projeté exprimé en mètres.")
+
+    if raster.bandCount() != 3:
+        _reject("Cette préparation exige exactement trois bandes raster.")
+
+    if raster.width() * raster.height() > config.max_pixels:
+        _reject(
+            "Cette version est limitée à 1 000 000 pixels sur le raster "
+            "entier, même si le périmètre est plus petit."
+        )
+
+    geometry = _read_aoi_geometry(aoi, aoi_feature_id)
+    bands = validate_rgb_bands(rgb_bands, raster.bandCount())
+    path_text = source_path(raster)
+    if not path_text:
+        _reject("Impossible de retrouver le fichier source du raster.")
+
+    warnings = [
+        "L'ordre RGB est déclaré par l'utilisateur.",
+        "Le géoréférencement est contrôlé techniquement, "
+        "pas validé par des points de contrôle terrain.",
+        "Les masques source sont respectés : une valeur déclarée NoData "
+        "peut exclure un pixel sans prouver une absence réelle de donnée.",
+        "Préparation uniquement : aucune segmentation ni classification.",
+    ]
+
+    if inspection.data["aoi"]["extends_outside_raster_extent"]:
+        warnings.append(
+            "Une partie du périmètre est hors de l'emprise du raster ; "
+            "elle ne sera pas représentée dans les masques produits."
+        )
+
+    if aoi.isEditable():
+        warnings.append(
+            "Le périmètre provient de l'état courant du tampon d'édition."
+        )
+
+    step = PrepareLandcover(
+        raster_path=Path(path_text),
+        aoi_wkb=bytes(geometry.asWkb()),
+        aoi_crs_wkt=aoi.crs().toWkt(),
+        rgb_bands=bands,
+        output_parent=parent,
+        config=config,
+    )
+    return step, warnings
+
+@tool(level=Level.CREATE, params={
+    "raster_layer_id": Param(
+        "string",
+        "Identifiant du GeoTIFF local chargé dans QGIS.",
+    ),
+    "aoi_layer_id": Param(
+        "string",
+        "Identifiant de la couche polygonale du périmètre.",
+    ),
+    "aoi_feature_id": Param(
+        "integer",
+        "Identifiant QGIS de l'entité polygonale à analyser.",
+    ),
+    "rgb_bands": Param(
+        "array",
+        "Trois indices distincts dans l'ordre rouge, vert, bleu.",
+        items="integer",
+    ),
+    "output_parent": Param(
+        "string",
+        "Chemin absolu d'un dossier existant pour les sorties.",
+    ),
+    "validity_policy": Param(
+        "string",
+        "Politique explicite de validité des pixels.",
+        enum=("respect_source_masks",),
+    ),
+})
+def prepare_landcover_inputs(
+    raster_layer_id: str,
+    aoi_layer_id: str,
+    aoi_feature_id: int,
+    rgb_bands: list[int],
+    output_parent: str,
+    validity_policy: str,
+) -> Steps:
+    """Prépare les entrées OBIA dans un nouveau dossier, sans segmentation.
+
+    GeoTIFF local à trois bandes, limité à un million de pixels.
+    Le périmètre doit déjà partager le SCR projeté métrique du raster.
+    Produit les rasters de préparation et leur manifeste, sans modifier
+    la source ni charger de couche. Exécution par job avec annulation
+    coopérative. Le dossier parent doit déjà exister.
+    """
+    step, warnings = _build_preparation_step(
+        raster_layer_id=raster_layer_id,
+        aoi_layer_id=aoi_layer_id,
+        aoi_feature_id=aoi_feature_id,
+        rgb_bands=rgb_bands,
+        output_parent=output_parent,
+        validity_policy=validity_policy,
+    )
+
+    report = yield step
+
+    excluded = report["counts"]["invalid_pixels_inside_aoi"]
+    if excluded:
+        warnings.append(
+            f"{excluded} pixels du périmètre sont exclus "
+            "par les masques source."
+        )
+
+    directory = Path(report["output_directory"])
+    outputs = [
+        str(directory / filename)
+        for filename in report["files"]
+    ]
+
+
+    return ToolResult(
+        data=report,
+        warnings=warnings,
+        outputs=outputs,
+    )
