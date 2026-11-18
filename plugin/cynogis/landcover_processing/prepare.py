@@ -341,7 +341,9 @@ def prepare_native_inputs(
 
     if control is None:
         control = PreparationControl()
-    elif not isinstance(control, PreparationControl):
+    elif type(control) is not PreparationControl:
+        # Type exact : un SegmentationControl lèverait une annulation que les
+        # jobs ne reconnaissent pas comme une annulation de préparation.
         raise ValueError("control doit être une PreparationControl.")
 
     control.checkpoint(0)

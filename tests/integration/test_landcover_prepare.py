@@ -5,7 +5,12 @@ from threading import Event
 import pytest
 
 from cynogis.core.landcover import PreparationConfig
-from cynogis.core.landcover_execution import PreparationCancelledError, PreparationControl
+from cynogis.core.landcover_execution import (
+    PreparationCancelledError,
+    PreparationControl,
+    SegmentationCancelledError,
+    SegmentationControl,
+)
 
 np = pytest.importorskip("numpy")
 gdal = pytest.importorskip("osgeo.gdal")
@@ -427,3 +432,36 @@ def test_cleanup_failure_after_cancellation_is_reported(sample, monkeypatch):
         for path in sample["output"].iterdir():
             if path.is_dir() and path.name.startswith("obia_"):
                 real_rmtree(path)
+
+
+class _DerivedControl(PreparationControl):
+    """Sous-classe quelconque : refusée comme SegmentationControl."""
+
+
+@pytest.mark.parametrize("already_cancelled", [False, True])
+@pytest.mark.parametrize("control_type", [SegmentationControl, _DerivedControl])
+def test_control_of_another_type_is_refused_before_reading(
+    sample, monkeypatch, control_type, already_cancelled
+):
+    received = []
+    original_source = sample["source"].read_bytes()
+
+    def forbidden_read(*args, **kwargs):
+        raise AssertionError("aucune lecture attendue")
+
+    monkeypatch.setattr(preparation, "_read_source", forbidden_read)
+    control = control_type(
+        on_progress=received.append,
+        is_cancelled=lambda: already_cancelled,
+    )
+
+    with pytest.raises(ValueError, match="PreparationControl") as caught:
+        _run(sample, control=control)
+
+    # Refus de type, jamais converti en annulation de l'un ou l'autre type.
+    assert not isinstance(
+        caught.value, (PreparationCancelledError, SegmentationCancelledError)
+    )
+    assert received == []
+    assert list(sample["output"].iterdir()) == []
+    assert sample["source"].read_bytes() == original_source

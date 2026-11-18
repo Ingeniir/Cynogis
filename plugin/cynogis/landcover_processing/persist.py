@@ -6,7 +6,8 @@ Entrée : dossier de préparation native complète (schéma 1).
 Sortie : nouveau dossier segmentation_* dans un parent existant, extérieur
 au dossier de préparation. Aucun fichier préparé n'est réécrit.
 
-Pas de classification, fusion, vectorisation ou annulation dans ce lot.
+Pas de classification, fusion ou vectorisation dans ce lot.
+Annulation coopérative entre phases, jamais au milieu d'un appel SLIC ou GDAL.
 L'appel est synchrone : ne pas l'exécuter sur le thread graphique de QGIS.
 
 Le manifeste est le marqueur de succès, publié en dernier par replace.
@@ -30,6 +31,7 @@ from typing import Any
 import numpy as np
 from osgeo import gdal, osr
 
+from ..core.landcover_execution import SegmentationControl
 from .segment import MAX_PIXELS, MAX_REQUESTED_SEGMENTS, SlicConfig, segment_rgb
 
 _INPUT_NAMES = (
@@ -312,6 +314,7 @@ def persist_segmentation(
     preparation_directory: Path,
     output_parent: Path,
     config: SlicConfig | None = None,
+    control: SegmentationControl | None = None,
 ) -> dict[str, Any]:
     """Segmente une préparation complète et publie un nouveau dossier.
 
@@ -319,8 +322,22 @@ def persist_segmentation(
     Ne crée pas le parent. Retourne exactement le manifeste JSON publié.
     En cas d'échec, supprime seulement le nouveau dossier de cette exécution.
     Un nettoyage impossible est une RuntimeError, chaînée à l'erreur initiale.
-    Aucune annulation coopérative n'est exposée dans cette première version.
+    control fournit des callbacks facultatifs de progression et d'annulation.
+    Sans control, les appels existants conservent leur comportement.
+    SegmentationCancelledError signale une annulation détectée à un checkpoint.
+    Les callbacks s'exécutent dans le thread appelant ; leur erreur se propage.
+    Les pourcentages indiquent des phases, pas une estimation du temps restant.
+    SLIC, GDAL et le calcul des empreintes ne sont pas interrompus en cours.
+    Une annulation après le dernier checkpoint peut arriver trop tard :
+    le manifeste est alors publié et le résultat complet retourné.
+    Aucun callback n'est exécuté après publication du manifeste.
     """
+    if control is None:
+        control = SegmentationControl()
+    if not isinstance(control, SegmentationControl):
+        raise ValueError("control doit être un SegmentationControl.")
+    control.checkpoint(0)
+
     if config is None:
         config = SlicConfig()
     if not isinstance(config, SlicConfig):
@@ -336,19 +353,27 @@ def persist_segmentation(
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"Fichier préparé absent ou lien symbolique refusé : {name}.")
 
+    control.checkpoint(10)
     before = _fingerprints(source)
+    control.checkpoint(20)
     rgb, mask, grid = _load_inputs(source)
     resolution = grid["geotransform"][1]
+    control.checkpoint(25)
     labels = segment_rgb(rgb, mask, pixel_size_m=resolution, config=config)
+    control.checkpoint(70)
     diagnostics = _diagnostics(labels, mask, resolution, config)
+    control.checkpoint(75)
     if _fingerprints(source) != before:
         raise RuntimeError("Les entrées préparées ont changé pendant le calcul.")
+    control.checkpoint(80)
 
     # Pas de dossier de sortie si les entrées ou le noyau sont refusés.
     run = Path(tempfile.mkdtemp(prefix="segmentation_", dir=str(parent)))
     try:
+        control.checkpoint(85)
         raster_path = run / "segments.tif"
         _write_segments(raster_path, labels, grid)
+        control.checkpoint(90)
         reread, reread_grid, masks, _ = _read_raster(
             raster_path, bands=1, data_type=gdal.GDT_UInt32,
         )
@@ -361,6 +386,7 @@ def persist_segmentation(
             raise RuntimeError("Fichiers compagnons inattendus après écriture/relecture.")
         if _fingerprints(source) != before:
             raise RuntimeError("Les entrées préparées ont changé avant publication.")
+        control.checkpoint(95)
 
         import skimage
 
@@ -412,6 +438,7 @@ def persist_segmentation(
         )
         if _read_json(temporary) != report:
             raise RuntimeError("Le manifeste temporaire relu est incohérent.")
+        control.checkpoint(99)
         temporary.replace(run / "segmentation.json")
         return report
     except BaseException as error:

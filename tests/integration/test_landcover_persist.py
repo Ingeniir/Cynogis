@@ -8,7 +8,8 @@ Familles d'essais :
 - vrais traitements : préparation + segmentation + écriture/relecture réelles ;
 - doubles (monkeypatch) : noyau, écriture, relecture, JSON, replace, rmtree remplacés
   pour exercer les refus et nettoyages que le vrai code ne déclenche pas ;
-- processus séparés : modes d'exceptions GDAL et import du plugin.
+- processus séparés : modes d'exceptions GDAL et import du plugin ;
+- contrôle coopératif : progression et annulation aux checkpoints de persist.
 
 Ces essais vérifient le contrat technique, pas la qualité géographique des segments ;
 aucun nombre exact d'objets SLIC n'est exigé sur une image texturée.
@@ -33,6 +34,11 @@ import skimage.segmentation  # noqa: E402
 from skimage.measure import label  # noqa: E402
 
 from cynogis.core.landcover import PreparationConfig  # noqa: E402
+from cynogis.core.landcover_execution import (  # noqa: E402
+    PreparationControl,
+    SegmentationCancelledError,
+    SegmentationControl,
+)
 from cynogis.landcover_processing import persist  # noqa: E402
 from cynogis.landcover_processing.prepare import prepare_native_inputs  # noqa: E402
 from cynogis.landcover_processing.segment import SlicConfig  # noqa: E402
@@ -633,6 +639,17 @@ prep, out = Path(sys.argv[3]), Path(sys.argv[4])
 report = persist_segmentation(preparation_directory=prep, output_parent=out)
 manifest = Path(report["output_directory"]) / "segmentation.json"
 assert json.loads(manifest.read_text(encoding="utf-8")) == report
+from cynogis.core.landcover_execution import (
+    SegmentationCancelledError, SegmentationControl)
+listing = sorted(p.name for p in out.iterdir())
+received = []
+control = SegmentationControl(on_progress=received.append,
+                              is_cancelled=lambda: bool(received) and received[-1] == 90)
+try:
+    persist_segmentation(preparation_directory=prep, output_parent=out, control=control)
+except SegmentationCancelledError:
+    print("annulation SegmentationCancelledError")
+assert sorted(p.name for p in out.iterdir()) == listing
 (prep / "analysis_mask.tif").write_bytes(b"pas un GeoTIFF")
 listing = sorted(p.name for p in out.iterdir())
 try:
@@ -658,6 +675,7 @@ def test_real_modes_d_exceptions_gdal(sample, mode, flag):
                          str(sample["out"]))
     assert result.returncode == 0, result.stderr[-2000:]
     assert "refus RuntimeError" in result.stdout
+    assert "annulation SegmentationCancelledError" in result.stdout
     assert f"exceptions {flag}" in result.stdout
     assert len(list(sample["out"].iterdir())) == 1
 
@@ -680,3 +698,195 @@ def test_real_import_du_plugin_sans_persist():
     result = _subprocess(_IMPORT_SCRIPT, str(PLUGIN_DIR))
     assert result.returncode == 0, result.stderr[-2000:]
     assert "chargés []" in result.stdout
+
+
+# --- Contrôle coopératif (SegmentationControl) -------------------------------------------
+CHECKPOINTS = [0, 10, 20, 25, 70, 75, 80, 85, 90, 95, 99]
+
+
+class Recorder:
+    """Progression reçue ; annulation demandée au checkpoint choisi."""
+
+    def __init__(self, cancel_at=None):
+        self.received, self.cancel_at, self.cancelled = [], cancel_at, False
+
+    def progress(self, value):
+        self.received.append(value)
+        if value == self.cancel_at:
+            self.cancelled = True
+
+    def control(self):
+        return SegmentationControl(on_progress=self.progress,
+                                   is_cancelled=lambda: self.cancelled)
+
+
+def _keep(case):
+    keep = case["out"] / "keep.txt"
+    keep.write_text("conserver", encoding="utf-8")
+    return keep
+
+
+def test_real_controle_sequence_exacte(sample):
+    recorder = Recorder()
+    report = _run(sample, control=recorder.control())
+    count = len(recorder.received)
+
+    assert recorder.received == [float(value) for value in CHECKPOINTS]
+    assert 100.0 not in recorder.received
+    saved = json.loads((Path(report["output_directory"]) / "segmentation.json")
+                       .read_text(encoding="utf-8"))
+    assert saved == report
+    assert len(recorder.received) == count  # aucun callback après le retour
+
+
+def test_real_sans_controle_comportement_anterieur(sample):
+    report = _run(sample)
+    saved = json.loads((Path(report["output_directory"]) / "segmentation.json")
+                       .read_text(encoding="utf-8"))
+    assert saved == report and report["status"] == "complete"
+
+
+@pytest.mark.parametrize("control", [PreparationControl(), object(), "x"],
+                         ids=["PreparationControl", "object", "str"])
+def test_real_controle_de_type_incorrect(sample, control):
+    with pytest.raises(ValueError, match="SegmentationControl"):
+        _run(sample, control=control)
+    assert list(sample["out"].iterdir()) == []
+
+
+def test_double_annulation_initiale_sans_lecture(sample, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("aucune lecture des entrées attendue")
+
+    monkeypatch.setattr(persist, "_fingerprints", forbidden)
+    monkeypatch.setattr(persist, "_load_inputs", forbidden)
+    received = []
+    control = SegmentationControl(on_progress=received.append, is_cancelled=lambda: True)
+    with pytest.raises(SegmentationCancelledError):
+        _run(sample, control=control)
+    assert received == [] and list(sample["out"].iterdir()) == []
+
+
+@pytest.mark.parametrize("cancel_at", CHECKPOINTS)
+def test_real_annulation_a_chaque_checkpoint(sample, cancel_at):
+    keep = _keep(sample)
+    source = _snapshot(sample["prep"])
+    recorder = Recorder(cancel_at)
+
+    with pytest.raises(SegmentationCancelledError):
+        _run(sample, control=recorder.control())
+
+    assert recorder.received[-1] == float(cancel_at)
+    assert list(sample["out"].iterdir()) == [keep]
+    assert keep.read_text(encoding="utf-8") == "conserver"
+    assert _snapshot(sample["prep"]) == source
+
+
+def test_real_annulation_a_99_supprime_le_temporaire(sample):
+    seen = []
+    recorder = Recorder(99)
+
+    def progress(value):
+        if value == 99:
+            run = next(p for p in sample["out"].iterdir() if p.is_dir())
+            seen.extend(sorted(p.name for p in run.iterdir()))
+        recorder.progress(value)
+
+    control = SegmentationControl(on_progress=progress, is_cancelled=lambda: recorder.cancelled)
+    with pytest.raises(SegmentationCancelledError):
+        _run(sample, control=control)
+
+    assert seen == ["segmentation.tmp", "segments.tif"]
+    assert list(sample["out"].iterdir()) == []
+
+
+@pytest.mark.parametrize("fail_at", [85, 90, 95, 99])
+def test_real_callback_en_erreur_apres_creation(sample, fail_at):
+    keep = _keep(sample)
+
+    def progress(value):
+        if value == fail_at:
+            raise RuntimeError(f"callback en échec à {value}")
+
+    with pytest.raises(RuntimeError, match=f"callback en échec à {float(fail_at)}") as caught:
+        _run(sample, control=SegmentationControl(on_progress=progress))
+    assert not isinstance(caught.value, SegmentationCancelledError)
+    assert list(sample["out"].iterdir()) == [keep]
+
+
+def test_double_nettoyage_impossible_apres_annulation(sample, monkeypatch):
+    keep = _keep(sample)
+    real_rmtree = shutil.rmtree
+
+    def blocked(path, *args, **kwargs):
+        raise PermissionError("suppression bloquée pour le test")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(persist.shutil, "rmtree", blocked)
+            with pytest.raises(RuntimeError, match="nettoyage incomplet") as caught:
+                _run(sample, control=Recorder(90).control())
+
+        residual = [p for p in sample["out"].iterdir() if p.is_dir()]
+        assert len(residual) == 1 and str(residual[0]) in str(caught.value)
+        assert isinstance(caught.value.__cause__, SegmentationCancelledError)
+        assert not (residual[0] / "segmentation.json").exists()
+        assert keep.read_text(encoding="utf-8") == "conserver"
+    finally:
+        # rmtree restauré par monkeypatch ; retirer seulement les dossiers de ce test.
+        for path in sample["out"].iterdir():
+            if path.is_dir() and path.name.startswith("segmentation_"):
+                real_rmtree(path)
+
+
+def test_double_slic_demande_l_annulation(sample, monkeypatch):
+    recorder = Recorder()
+    real_slic = skimage.segmentation.slic
+
+    def cancelling_slic(image, **kwargs):
+        labels = real_slic(image, **kwargs)
+        recorder.cancelled = True  # labels valides malgré tout
+        return labels
+
+    def forbidden_write(*args, **kwargs):
+        raise AssertionError("aucune écriture attendue")
+
+    monkeypatch.setattr(skimage.segmentation, "slic", cancelling_slic)
+    monkeypatch.setattr(persist, "_write_segments", forbidden_write)
+    with pytest.raises(SegmentationCancelledError):
+        _run(sample, control=recorder.control())
+
+    assert recorder.received == [0.0, 10.0, 20.0, 25.0]  # arrêt au checkpoint 70
+    assert list(sample["out"].iterdir()) == []
+
+
+def test_double_slic_annule_puis_echoue(sample, monkeypatch):
+    recorder = Recorder()
+
+    def failing_slic(image, **kwargs):
+        recorder.cancelled = True
+        raise RuntimeError("panne SLIC simulée")
+
+    monkeypatch.setattr(skimage.segmentation, "slic", failing_slic)
+    with pytest.raises(RuntimeError, match="panne SLIC simulée") as caught:
+        _run(sample, control=recorder.control())
+    assert not isinstance(caught.value, SegmentationCancelledError)
+    assert list(sample["out"].iterdir()) == []
+
+
+def test_double_annulation_tardive_apres_99(sample, monkeypatch):
+    recorder = Recorder()
+    real_replace = Path.replace
+
+    def late_replace(self, target):
+        recorder.cancelled = True  # trop tard : plus aucun checkpoint
+        return real_replace(self, target)
+
+    monkeypatch.setattr(persist.Path, "replace", late_replace)
+    report = _run(sample, control=recorder.control())
+
+    run = Path(report["output_directory"])
+    assert json.loads((run / "segmentation.json").read_text(encoding="utf-8")) == report
+    assert sorted(p.name for p in run.iterdir()) == ["segmentation.json", "segments.tif"]
+    assert recorder.cancelled
+    assert recorder.received == [float(value) for value in CHECKPOINTS]

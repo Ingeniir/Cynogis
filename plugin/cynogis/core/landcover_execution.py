@@ -43,3 +43,21 @@ class PreparationControl:
 
         # Une annulation peut arriver pendant le callback
         self.check_cancelled()
+
+
+class SegmentationCancelledError(Exception):
+    """Annulation de segmentation détectée avant publication du manifeste."""
+
+
+@dataclass(frozen=True)
+class SegmentationControl(PreparationControl):
+    """Réutilise les checkpoints existants avec une annulation spécifique.
+
+    Les callbacks s'exécutent dans le thread du traitement.
+    Les opérations en cours ne sont pas interrompues : le contrôle intervient
+    aux points de passage de persist_segmentation.
+    """
+
+    def check_cancelled(self) -> None:
+        if self.is_cancelled is not None and self.is_cancelled():
+            raise SegmentationCancelledError("Segmentation OBIA annulée.")
