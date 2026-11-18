@@ -17,7 +17,7 @@ from qgis.core import (
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
-from ..core.jobs import PrepareLandcover, Steps
+from ..core.jobs import PrepareLandcover, SegmentLandcover, Steps
 from ..core.landcover import PreparationConfig, validate_rgb_bands
 from ..core.registry import Level, tool
 from ..core.schema import Param
@@ -425,4 +425,152 @@ def prepare_landcover_inputs(
         data=report,
         warnings=warnings,
         outputs=outputs,
+    )
+
+
+def _segmentation_directory(value: str, name: str) -> Path:
+    """Résout un dossier existant sans lire son contenu."""
+    if not isinstance(value, str) or not value.strip():
+        raise ToolError(
+            ErrorCode.INVALID_PARAMS,
+            f"{name} doit être un chemin non vide.",
+        )
+
+    try:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise ToolError(
+                ErrorCode.INVALID_PARAMS,
+                f"{name} doit être un chemin absolu.",
+            )
+        resolved = path.resolve(strict=True)
+        is_directory = resolved.is_dir()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ToolError(
+            ErrorCode.INVALID_PARAMS,
+            f"{name} : dossier inaccessible ou chemin invalide.",
+        ) from exc
+
+    if not is_directory:
+        raise ToolError(
+            ErrorCode.INVALID_PARAMS,
+            f"{name} doit désigner un dossier existant.",
+        )
+    return resolved
+
+
+def _build_segmentation_step(
+    preparation_directory: str,
+    output_parent: str,
+    target_segment_area_m2: float,
+    compactness: float,
+    max_num_iter: int,
+) -> SegmentLandcover:
+    """Valide les paramètres publics sans ouvrir de manifeste ou de raster."""
+    # Import local : le catalogue ne doit pas charger le module de segmentation.
+    # SlicConfig lui-même ne charge pas les dépendances de calcul.
+    from ..landcover_processing.segment import SlicConfig
+
+    try:
+        config = SlicConfig(
+            target_segment_area_m2=target_segment_area_m2,
+            compactness=compactness,
+            max_num_iter=max_num_iter,
+        )
+    except ValueError as exc:
+        raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
+
+    source = _segmentation_directory(
+        preparation_directory, "preparation_directory"
+    )
+    parent = _segmentation_directory(output_parent, "output_parent")
+
+    # Même règle que le moteur, appliquée aux chemins résolus.
+    # Le moteur refait ce contrôle et demeure responsable de la validité
+    # des fichiers. Cette vérification n'est pas un verrou de fichiers.
+    if parent == source or source in parent.parents:
+        raise ToolError(
+            ErrorCode.INVALID_PARAMS,
+            "Le parent de sortie doit être extérieur au dossier de préparation.",
+        )
+
+    return SegmentLandcover(
+        preparation_directory=source,
+        output_parent=parent,
+        config=config,
+    )
+
+
+@tool(level=Level.CREATE, params={
+    "preparation_directory": Param(
+        "string",
+        "Chemin absolu du dossier produit par prepare_landcover_inputs.",
+    ),
+    "output_parent": Param(
+        "string",
+        "Dossier parent existant, absolu et extérieur à la préparation.",
+    ),
+    "target_segment_area_m2": Param(
+        "number",
+        "Surface cible strictement positive en m² ; pas un minimum garanti.",
+        required=False,
+        default=25.0,
+    ),
+    "compactness": Param(
+        "number",
+        "Compacité SLIC finie et strictement positive.",
+        required=False,
+        default=10.0,
+    ),
+    "max_num_iter": Param(
+        "integer",
+        "Nombre maximal d'itérations SLIC, entre 1 et 100.",
+        required=False,
+        default=10,
+        minimum=1,
+        maximum=100,
+    ),
+})
+def segment_landcover(
+    preparation_directory: str,
+    output_parent: str,
+    target_segment_area_m2: float = 25.0,
+    compactness: float = 10.0,
+    max_num_iter: int = 10,
+) -> Steps:
+    """Segmente une préparation OBIA en objets non classés, via un job.
+
+    Produit segments.tif et segmentation.json dans un nouveau dossier.
+    Limites du moteur : un million de pixels et dix mille graines demandées.
+    Aucun chargement de couche, classement de paysages ou vectorisation.
+    Les contrôles des fichiers et le calcul s'exécutent dans la tâche.
+    Annulation entre phases : un appel SLIC en cours n'est pas interrompu.
+    Les valeurs par défaut sont expérimentales, pas une validation terrain.
+    """
+    step = _build_segmentation_step(
+        preparation_directory=preparation_directory,
+        output_parent=output_parent,
+        target_segment_area_m2=target_segment_area_m2,
+        compactness=compactness,
+        max_num_iter=max_num_iter,
+    )
+
+    # Ne pas intercepter ici les erreurs de la tâche : préserver les règles
+    # existantes d'annulation, d'erreur technique et de résultat tardif.
+    report = yield step
+
+    directory = Path(report["output_directory"])
+    return ToolResult(
+        data=report,
+        warnings=[
+            "Les identifiants sont des objets non classés, pas des classes "
+            "de paysage. Aucune couche n'a été ajoutée au projet.",
+            "La surface cible ne garantit ni le nombre final d'objets "
+            "ni une surface minimale.",
+            "Le masque de la préparation est conservé ; les zones exclues "
+            "ne sont ni complétées ni classées.",
+            "Les diagnostics sont descriptifs : ils ne valident pas "
+            "la qualité géographique des limites.",
+        ],
+        outputs=[str(directory / name) for name in report["files"]],
     )
