@@ -13,7 +13,16 @@ from typing import Any
 from ..bridge.protocol import Request, Response
 from .audit import AuditLog
 from .errors import ErrorCode, ToolError
-from .jobs import RUNNING, Executor, JobManager, collecting, render_notes
+from .jobs import (
+    CANCELLED,
+    FAILED,
+    RUNNING,
+    DetachedJobOutcome,
+    Executor,
+    JobManager,
+    collecting,
+    render_notes,
+)
 from .policy import PermissionPolicy
 from .registry import Level, ToolRegistry, ToolSpec
 from .schema import Param, validate_params
@@ -66,7 +75,45 @@ class Dispatcher:
         job = self.jobs.get(job_id)
         if job.status == RUNNING:
             return Response(id=None, ok=True, data=self.jobs.status(job), job_id=job.id)
-        return job.response  # réponse finale de l'outil, déjà auditée
+
+        outcome = job.response
+        if isinstance(outcome, Response):
+            return outcome  # Réponse normale déjà finalisée et auditée.
+
+        if isinstance(outcome, DetachedJobOutcome):
+            details = {
+                "job_id": job.id,
+                "job_status": job.status,
+                "detached": True,
+                **dataclasses.asdict(outcome),
+            }
+
+            if job.status == CANCELLED:
+                code = ErrorCode.CANCELLED
+                message = outcome.error_message or "Job abandonné après détachement."
+            elif job.status == FAILED:
+                # Ne pas convertir une cause d'annulation en annulation propre.
+                # Le code d'origine reste consultable dans les détails.
+                code = ErrorCode.INTERNAL_ERROR
+                message = outcome.error_message or "Échec du job après détachement."
+            else:
+                code = ErrorCode.INTERNAL_ERROR
+                message = "État incohérent pour un diagnostic de job détaché."
+
+            return Response.failure(None, ToolError(code, message, details))
+
+        return Response.failure(
+            None,
+            ToolError(
+                ErrorCode.INTERNAL_ERROR,
+                "Le job terminé ne contient pas de réponse finale reconnue.",
+                {
+                    "job_id": job.id,
+                    "job_status": job.status,
+                    "response_type": type(outcome).__name__,
+                },
+            ),
+        )
 
     def _cancel_job(self, job_id: str) -> dict[str, Any]:
         assert self.jobs is not None

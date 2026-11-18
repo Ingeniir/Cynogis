@@ -927,3 +927,163 @@ def test_outcome_n_extrait_jamais_un_chemin_du_message():
     assert outcome.residual_directory is None
     assert outcome.retained_output_directory is None
     assert all(not isinstance(v, BaseException) for v in vars(outcome).values())
+
+
+# --- get_job_status après détachement (correctif I1) -------------------------------------
+# Défaut du dispatcher, testé par appel direct : aucune reproduction par le pont TCP.
+def _detached(tmp_path, value=None, error=None):
+    dispatcher, executor, audit = make(tmp_path)
+    job_id = dispatcher.dispatch(_req("calcul", n=1)).job_id
+    dispatcher.jobs.detach_finishers()
+    executor.finish(value, error)
+    return dispatcher, dispatcher.jobs.get(job_id), audit
+
+
+def _status(dispatcher, job_id, request_id="1"):
+    raw = {"v": PROTOCOL_VERSION, "id": request_id, "method": "get_job_status",
+           "params": {"job_id": job_id}, "token": "t"}
+    return dispatcher.dispatch(decode_request(json.dumps(raw).encode()))
+
+
+def _outcome(**fields):
+    base = dict(error_type=None, error_code=None, error_message=None, cause_type=None,
+                retained_output_directory=None, residual_directory=None)
+    return DetachedJobOutcome(**{**base, **fields})
+
+
+def test_i1_succes_apres_detachement_est_une_annulation(tmp_path):
+    dispatcher, job, _ = _detached(tmp_path, {"OUTPUT": 1})
+    assert job.status == "cancelled"
+
+    response = _status(dispatcher, job.id)
+
+    assert response.ok is False and response.job_id is None
+    assert response.error["code"] == "CANCELLED"
+    assert response.error["message"] == job.response.error_message
+    details = response.error["details"]
+    assert details["job_id"] == job.id and details["job_status"] == "cancelled"
+    assert details["detached"] is True and details["error_code"] == "CANCELLED"
+
+
+def test_i1_erreur_technique_apres_detachement(tmp_path):
+    error = RuntimeError("panne")
+    error.__cause__ = ValueError("origine")
+    dispatcher, job, _ = _detached(tmp_path, error=error)
+    assert job.status == "failed"
+
+    response = _status(dispatcher, job.id)
+
+    assert response.ok is False
+    assert response.error["code"] == "INTERNAL_ERROR"
+    assert response.error["message"] == "panne"
+    details = response.error["details"]
+    assert details["error_type"] == "RuntimeError"
+    assert details["error_message"] == "panne"
+    assert details["cause_type"] == "ValueError"
+
+
+def test_i1_sortie_complete_tardive_conservee(tmp_path):
+    dispatcher, executor, _, published = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+    dispatcher.jobs.detach_finishers()
+    executor.finish({"status": "complete", "output_directory": "sortie"})
+
+    response = _status(dispatcher, job_id)
+
+    assert response.error["code"] == "CANCELLED"
+    assert response.error["details"]["retained_output_directory"] == "sortie"
+    assert published == []
+
+
+def test_i1_residual_directory_conserve(tmp_path):
+    # Diagnostic fabriqué par le test : prepare.py ne produit pas ce champ aujourd'hui.
+    error = ToolError(ErrorCode.PROCESSING_FAILED, "échec", {"residual_directory": "residu"})
+    dispatcher, job, _ = _detached(tmp_path, error=error)
+
+    response = _status(dispatcher, job.id)
+
+    assert response.error["code"] == "INTERNAL_ERROR"
+    assert response.error["details"]["residual_directory"] == "residu"
+    assert response.error["details"]["error_code"] == "PROCESSING_FAILED"
+
+
+@pytest.mark.parametrize("origin", ["CANCELLED", "CODE_INCONNU"])
+def test_i1_echec_jamais_declasse_ni_code_inconnu_rejete(tmp_path, origin):
+    dispatcher, job, _ = _detached(tmp_path, {"OUTPUT": 1})
+    job.status = "failed"
+    job.response = _outcome(error_type="ToolError", error_code=origin, error_message="x")
+
+    response = _status(dispatcher, job.id)
+
+    assert response.error["code"] == "INTERNAL_ERROR"
+    assert response.error["details"]["error_code"] == origin
+
+
+def test_i1_diagnostic_avec_statut_inattendu(tmp_path):
+    dispatcher, job, _ = _detached(tmp_path, {"OUTPUT": 1})
+    job.status = "done"
+
+    response = _status(dispatcher, job.id)
+
+    assert response.ok is False and response.error["code"] == "INTERNAL_ERROR"
+    assert "incohérent" in response.error["message"]
+
+
+@pytest.mark.parametrize("final", [None, object()])
+def test_i1_reponse_finale_inconnue(tmp_path, final):
+    dispatcher, executor, _ = make(tmp_path)
+    job_id = dispatcher.dispatch(_req("calcul", n=1)).job_id
+    executor.finish(error=ToolError(ErrorCode.PROCESSING_FAILED, "x"))
+    job = dispatcher.jobs.get(job_id)
+    job.status, job.response = "done", final
+
+    response = _status(dispatcher, job_id)
+
+    assert response.ok is False and response.data is None
+    assert response.error["code"] == "INTERNAL_ERROR"
+    assert response.error["details"]["response_type"] == type(final).__name__
+
+
+def test_i1_comportement_historique_preserve(tmp_path):
+    dispatcher, executor, _ = make(tmp_path)
+    job_id = dispatcher.dispatch(_req("calcul", n=1)).job_id
+    running = _status(dispatcher, job_id)
+    assert running.ok and running.job_id == job_id and running.data["status"] == "running"
+
+    executor.finish({"OUTPUT": 1})
+    executor.finish({"OUTPUT": 7})
+    done = _status(dispatcher, job_id, "2")
+    assert done.ok and done.id == "2" and done.job_id is None and done.data == {"total": 7}
+
+    failed_id = dispatcher.dispatch(_req("calcul", n=1)).job_id
+    executor.finish(error=ToolError(ErrorCode.PROCESSING_FAILED, "échec"))
+    failed = _status(dispatcher, failed_id)
+    assert not failed.ok and failed.error["code"] == "PROCESSING_FAILED"
+
+
+def test_i1_interrogations_repetees_stables(tmp_path):
+    dispatcher, job, audit = _detached(tmp_path, {"OUTPUT": 1})
+    first = _status(dispatcher, job.id)
+    outcome, finished = job.response, job.finished
+
+    def finisher(result, error):
+        raise AssertionError("finisseur rappelé")
+
+    job.finisher = finisher
+    second = _status(dispatcher, job.id)
+
+    assert first.error == second.error
+    assert job.response is outcome and job.finished == finished
+    assert audit.recent(10) == []
+
+
+def test_i1_ligne_encodee(tmp_path):
+    dispatcher, job, _ = _detached(tmp_path, {"OUTPUT": 1})
+
+    payload = json.loads(_status(dispatcher, job.id, "status-7").encode())
+
+    assert payload["id"] == "status-7" and payload["ok"] is False
+    assert "data" not in payload and "job_id" not in payload
+    assert isinstance(payload["error"]["details"], dict)
+    assert payload["error"]["details"]["detached"] is True
+    assert "DetachedJobOutcome" not in json.dumps(payload)
