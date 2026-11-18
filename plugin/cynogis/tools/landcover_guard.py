@@ -41,7 +41,7 @@ def acquire_landcover_guard() -> Callable[[], None]:
     if current_owner is not None and current_owner != "":
         raise ToolError(
             ErrorCode.BUSY,
-            "Une préparation OBIA détient encore le verrou de cette "
+            "Un traitement OBIA détient encore le verrou de cette "
             "application QGIS. Attendre sa terminaison, y compris "
             "si une annulation ou un rechargement a été demandé."
         )

@@ -17,15 +17,20 @@ from cynogis.core.jobs import (
     Pacer,
     Pause,
     PrepareLandcover,
+    SegmentLandcover,
     _finish_detached_job,
     note,
     run_now,
 )
 from cynogis.core.landcover import PreparationConfig
-from cynogis.core.landcover_execution import PreparationCancelledError
+from cynogis.core.landcover_execution import (
+    PreparationCancelledError,
+    SegmentationCancelledError,
+)
 from cynogis.core.policy import PermissionPolicy
 from cynogis.core.registry import Level, ToolRegistry, tool
 from cynogis.core.schema import Param
+from cynogis.landcover_processing.segment import SlicConfig
 
 
 def _req(method, **params):
@@ -1087,3 +1092,181 @@ def test_i1_ligne_encodee(tmp_path):
     assert isinstance(payload["error"]["details"], dict)
     assert payload["error"]["details"]["detached"] is True
     assert "DetachedJobOutcome" not in json.dumps(payload)
+
+
+# --- SegmentLandcover : étape de segmentation (doubles, sans QGIS) -----------------------
+def _segment_step(tmp_path, **overrides):
+    arguments = {
+        "preparation_directory": tmp_path / "preparation",
+        "output_parent": tmp_path / "sorties",
+        "config": SlicConfig(),
+    }
+    arguments.update(overrides)
+    return SegmentLandcover(**arguments)
+
+
+def test_segment_step_construction_valide_sans_lecture(tmp_path):
+    # Chemins absolus inexistants : aucune lecture ni résolution à la construction.
+    step = _segment_step(tmp_path)
+    assert step.label == "Segmentation des paysages OBIA"
+    assert not step.preparation_directory.exists()
+
+    import dataclasses
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        step.config = SlicConfig(compactness=2.0)
+
+
+@pytest.mark.parametrize("field_name", ["preparation_directory", "output_parent"])
+@pytest.mark.parametrize("value", [Path("relatif"), "C:/texte", None])
+def test_segment_step_refuse_un_chemin_non_absolu(tmp_path, field_name, value):
+    with pytest.raises(ValueError, match=field_name):
+        _segment_step(tmp_path, **{field_name: value})
+
+
+class _DerivedSlic(SlicConfig):
+    pass
+
+
+@pytest.mark.parametrize("config", [None, {}, _DerivedSlic(),
+                                    PreparationConfig(validity_policy="respect_source_masks")])
+def test_segment_step_exige_une_slicconfig_exacte(tmp_path, config):
+    with pytest.raises(ValueError, match="SlicConfig exacte"):
+        _segment_step(tmp_path, config=config)
+
+
+@pytest.mark.parametrize("label", ["", "   ", None, 3])
+def test_segment_step_refuse_un_label_vide(tmp_path, label):
+    with pytest.raises(ValueError, match="label"):
+        _segment_step(tmp_path, label=label)
+
+
+def test_import_des_jobs_sans_dependances_lourdes():
+    import subprocess
+    import sys
+
+    script = (
+        "import sys; sys.path.insert(0, sys.argv[1]);"
+        "import cynogis.core.jobs, cynogis.core.dispatcher;"
+        "heavy = ('qgis', 'numpy', 'osgeo', 'scipy', 'skimage');"
+        "print(sorted(m for m in heavy if m in sys.modules));"
+        "from pathlib import Path;"
+        "from cynogis.landcover_processing.segment import SlicConfig;"
+        "from cynogis.core.jobs import SegmentLandcover;"
+        "SegmentLandcover(Path(sys.argv[1]).resolve(), Path(sys.argv[1]).resolve(), SlicConfig());"
+        "print(sorted(m for m in heavy if m in sys.modules),"
+        "      'cynogis.landcover_processing.segment' in sys.modules)"
+    )
+    plugin = Path(__file__).resolve().parents[2] / "plugin"
+    # -I : ignore PYTHONHOME/PYTHONPATH hérités ; chemin source inséré explicitement.
+    result = subprocess.run([sys.executable, "-I", "-c", script, str(plugin)],
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["[]", "[] True"]
+
+
+def _segmentation_manager(tmp_path):
+    executor = FakeExecutor()
+    manager = JobManager(executor)
+    published, finished = [], []
+
+    def generator():
+        report = yield _segment_step(tmp_path)
+        published.append(report)
+        return report
+
+    gen = generator()
+    job = manager.start("segmentation_test", gen, next(gen),
+                        lambda r, e: finished.append((r, e)) or (r, e))
+    return manager, executor, job, published, finished
+
+
+def test_segment_step_reconnue_et_resultat_transmis(tmp_path):
+    _, executor, job, published, finished = _segmentation_manager(tmp_path)
+
+    assert isinstance(executor.started[0][0], SegmentLandcover)
+    assert job.wait_for_stop is True
+    assert job.algorithm == "Segmentation des paysages OBIA"
+    report = {"status": "complete", "output_directory": "sortie"}
+    executor.finish(report)
+
+    assert job.status == "done" and published == [report]
+    assert finished == [(report, None)]
+
+
+def test_segment_annulation_attend_le_callback_et_reste_idempotente(tmp_path):
+    manager, executor, job, published, finished = _segmentation_manager(tmp_path)
+
+    manager.cancel(job, "Annulation demandée.")
+    manager.cancel(job, "Seconde demande.")
+    assert job.status == "running" and finished == []      # pas de clôture prématurée
+    assert executor.cancelled == [1]                        # une seule demande transmise
+
+    executor.finish(error=SegmentationCancelledError("Segmentation OBIA annulée."))
+    assert job.status == "cancelled" and published == []
+    (_, error), = finished
+    assert error.code == ErrorCode.CANCELLED and "Annulation demandée" in str(error)
+
+
+def test_segment_annulation_depuis_qgis_sans_demande(tmp_path):
+    _, executor, job, published, finished = _segmentation_manager(tmp_path)
+    executor.finish(error=SegmentationCancelledError("annulée dans QGIS"))
+    assert job.status == "cancelled" and published == []
+    assert finished[0][1].code == ErrorCode.CANCELLED
+
+
+@pytest.mark.parametrize("requested", [False, True])
+def test_segment_erreur_technique_reste_un_echec(tmp_path, requested):
+    manager, executor, job, published, _ = _segmentation_manager(tmp_path)
+    if requested:
+        manager.cancel(job, "Annulation demandée.")
+    error = RuntimeError("nettoyage incomplet")
+    error.__cause__ = SegmentationCancelledError("annulée")  # cause ignorée : échec
+    executor.finish(error=error)
+
+    assert job.status == "failed" and published == []
+    assert manager.running is None
+
+
+def test_segment_annulation_tardive_conserve_la_sortie(tmp_path):
+    manager, executor, job, published, finished = _segmentation_manager(tmp_path)
+    manager.cancel(job, "Annulation demandée.")
+    executor.finish({"status": "complete", "output_directory": "sortie-complete"})
+
+    assert job.status == "cancelled" and published == []   # générateur non repris
+    assert job.generator.gi_frame is None
+    (_, error), = finished
+    assert error.details == {"retained_output_directory": "sortie-complete",
+                             "outputs_loaded": False}
+
+
+def test_segment_detachee_ni_reprise_ni_audit(tmp_path):
+    dispatcher, executor, audit = make(tmp_path)
+    published = []
+
+    @tool(level=Level.CREATE)
+    def segmentation_test():
+        """Outil factice de segmentation."""
+        report = yield _segment_step(tmp_path)
+        published.append(report)
+        return report
+
+    dispatcher.registry.register(segmentation_test)
+    job_id = dispatcher.dispatch(_req("segmentation_test")).job_id
+    dispatcher.jobs.detach_finishers()
+    executor.finish({"status": "complete", "output_directory": "sortie"})
+
+    job = dispatcher.jobs.get(job_id)
+    assert job.status == "cancelled" and job.generator.gi_frame is None
+    assert published == [] and audit.recent(10) == []
+    assert job.response.retained_output_directory == "sortie"
+    status = dispatcher.dispatch(_req("get_job_status", job_id=job_id))
+    assert status.ok is False and status.error["code"] == "CANCELLED"  # I1 préservé
+
+
+def test_segment_detachee_erreur_technique_reste_un_echec(tmp_path):
+    manager, executor, job, published, finished = _segmentation_manager(tmp_path)
+    manager.detach_finishers()
+    executor.finish(error=OSError("disque plein"))
+
+    assert job.status == "failed" and finished == [] and published == []
+    assert job.response.error_type == "OSError"

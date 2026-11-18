@@ -22,12 +22,18 @@ from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .cleanup import run_cleanup_steps
 from .errors import ErrorCode, ToolError
 from .landcover import PreparationConfig
-from .landcover_execution import PreparationCancelledError
+from .landcover_execution import (
+    PreparationCancelledError,
+    SegmentationCancelledError,
+)
+
+if TYPE_CHECKING:
+    from ..landcover_processing.segment import SlicConfig
 
 RUNNING, DONE, FAILED, CANCELLED = "running", "done", "failed", "cancelled"
 KEEP_FINISHED = 20  # jobs terminés gardés pour get_job_status
@@ -67,6 +73,34 @@ class PrepareLandcover:
     output_parent: Path
     config: PreparationConfig
     label: str = "Préparation des entrées OBIA"
+
+
+@dataclass(frozen=True)
+class SegmentLandcover:
+    """Segmentation d'une préparation existante, sans objet QGIS.
+
+    Construction : chemins absolus et configuration SLIC figée.
+    La vérification des fichiers et des grilles reste dans la persistance.
+    """
+
+    preparation_directory: Path
+    output_parent: Path
+    config: SlicConfig
+    label: str = "Segmentation des paysages OBIA"
+
+    def __post_init__(self) -> None:
+        from ..landcover_processing.segment import SlicConfig
+
+        for name in ("preparation_directory", "output_parent"):
+            path = getattr(self, name)
+            if not isinstance(path, Path) or not path.is_absolute():
+                raise ValueError(f"{name} doit être un Path absolu.")
+
+        if type(self.config) is not SlicConfig:
+            raise ValueError("config doit être une SlicConfig exacte.")
+        if not isinstance(self.label, str) or not self.label.strip():
+            raise ValueError("label doit être un texte non vide.")
+
 
 @dataclass(frozen=True)
 class Pause:
@@ -133,14 +167,18 @@ def render_notes(notes: Counter[str]) -> list[str]:
     return [template.format(n=n) for template, n in notes.items()]
 
 
-Step = AlgCall | Fetch | Pause | PrepareLandcover
+Step = AlgCall | Fetch | Pause | PrepareLandcover | SegmentLandcover
 # Type de retour des outils et helpers qui cèdent des étapes (appel avec « yield from »).
 Steps = Generator[Step, Any, Any]
 Done = Callable[[Any, "BaseException | None"], None]  # (résultats, erreur)
 
 
 class Executor(Protocol):
-    def start(self, step: AlgCall | Fetch | PrepareLandcover, done: Done) -> Any:
+    def start(
+        self,
+        step: AlgCall | Fetch | PrepareLandcover | SegmentLandcover,
+        done: Done,
+    ) -> Any:
         """Lance l'étape et renvoie un handle ; done est appelé une fois, sur le thread
         principal, après le retour de start."""
         ...
@@ -313,14 +351,14 @@ class JobManager:
 
     # --- Déroulement ---------------------------------------------------------------------
     def _launch(self, job: Job, step: Any) -> None:
-        job.wait_for_stop = isinstance(step, PrepareLandcover)
+        job.wait_for_stop = isinstance(step, (PrepareLandcover, SegmentLandcover))
 
         if isinstance(step, Pause):
             job.algorithm, job.progress, job.handle = step.label, step.progress, None
             self.executor.pause(lambda: self._advance(job, None, None))
             return
 
-        if not isinstance(step, (AlgCall, Fetch, PrepareLandcover)):
+        if not isinstance(step, (AlgCall, Fetch, PrepareLandcover, SegmentLandcover)):
             self._advance(job, None, TypeError(f"Étape inattendue : {step!r}"))
             return
 
@@ -345,7 +383,9 @@ class JobManager:
             return
 
         if job.wait_for_stop:
-            cancellation = isinstance(error, PreparationCancelledError)
+            cancellation = isinstance(
+                error, (PreparationCancelledError, SegmentationCancelledError)
+            )
             requested = job.cancellation_reason is not None
 
             if cancellation or (requested and error is None):
@@ -443,7 +483,7 @@ class JobManager:
         """
         # Une erreur technique reste prioritaire sur l'abandon du job.
         if error is not None and not isinstance(
-            error, PreparationCancelledError
+            error, (PreparationCancelledError, SegmentationCancelledError)
         ):
             self._stop_landcover(job, error, FAILED)
             return

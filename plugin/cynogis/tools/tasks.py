@@ -40,8 +40,9 @@ from qgis.PyQt.QtNetwork import QNetworkRequest
 
 from ..compat import EXCLUDE_USER_INPUT
 from ..core.errors import ErrorCode, ToolError
-from ..core.jobs import AlgCall, Done, Fetch, PrepareLandcover
+from ..core.jobs import AlgCall, Done, Fetch, PrepareLandcover, SegmentLandcover
 from .landcover_guard import acquire_landcover_guard
+from .landcover_segmentation_tasks import LandcoverSegmentationTask
 from .landcover_tasks import LandcoverPreparationTask
 
 PUMP_INTERVAL_S = 0.1  # repli synchrone : repeindre l'interface au plus toutes les 100 ms
@@ -62,42 +63,51 @@ class ProcessingExecutor:
     def __init__(self) -> None:
         # La tâche garde des pointeurs vers context et feedback : les garder en vie jusqu'à
         # executed, même après une annulation.
-        self._active: set[_Handle | _FetchTask | LandcoverPreparationTask] = set()
+        self._active: set[
+            _Handle | _FetchTask | LandcoverPreparationTask | LandcoverSegmentationTask
+        ] = set()
 
-    def start(self, step: AlgCall | Fetch | PrepareLandcover,
-              done: Done) -> _Handle | _FetchTask | LandcoverPreparationTask:
-        if isinstance(step, PrepareLandcover):
+    def start(
+        self,
+        step: AlgCall | Fetch | PrepareLandcover | SegmentLandcover,
+        done: Done,
+    ) -> _Handle | _FetchTask | LandcoverPreparationTask | LandcoverSegmentationTask:
+        if isinstance(step, (PrepareLandcover, SegmentLandcover)):
             release_guard = acquire_landcover_guard()
-            task = None
 
-            def forget(completed: LandcoverPreparationTask) -> None:
+            def forget(
+                completed: LandcoverPreparationTask | LandcoverSegmentationTask,
+            ) -> None:
                 self._active.discard(completed)
                 release_guard()
 
+            obia_task: LandcoverPreparationTask | LandcoverSegmentationTask
             try:
-                task = LandcoverPreparationTask(step, done, forget)
-                self._active.add(task)
-
-                task_id = QgsApplication.taskManager().addTask(task)
-                if not task_id:
-                    raise RuntimeError(
-                        "Impossible d'enregistrer la tâche OBIA."
-                    )
-
+                if isinstance(step, PrepareLandcover):
+                    obia_task = LandcoverPreparationTask(step, done, forget)
+                else:
+                    obia_task = LandcoverSegmentationTask(step, done, forget)
             except Exception:
-                if task is not None:
-                    self._active.discard(task)
                 release_guard()
                 raise
 
-            return task
+            try:
+                self._active.add(obia_task)
+                task_id = QgsApplication.taskManager().addTask(obia_task)
+                if not task_id:
+                    raise RuntimeError("Impossible d'enregistrer la tâche OBIA.")
+            except Exception:
+                self._active.discard(obia_task)
+                release_guard()
+                raise
 
+            return obia_task
 
         if isinstance(step, Fetch):
-            task = _FetchTask(step, done, self._active.discard)
-            self._active.add(task)  # garder l'objet Python de la tâche jusqu'à finished
-            QgsApplication.taskManager().addTask(task)
-            return task
+            fetch_task = _FetchTask(step, done, self._active.discard)
+            self._active.add(fetch_task)  # garder l'objet Python de la tâche jusqu'à finished
+            QgsApplication.taskManager().addTask(fetch_task)
+            return fetch_task
         algorithm = QgsApplication.processingRegistry().createAlgorithmById(step.algorithm_id)
         if algorithm is None:
             raise ToolError(ErrorCode.ALGORITHM_NOT_ALLOWED,
@@ -113,27 +123,45 @@ class ProcessingExecutor:
             logger.info("%s : exécution sur le thread principal", step.algorithm_id)
             QTimer.singleShot(0, lambda: self._run_here(handle))
         else:
-            task = QgsProcessingAlgRunnerTask(algorithm, step.params, context, handle.feedback)
-            task.setDescription(f"Cynogis : {algorithm.displayName()}")
-            task.executed.connect(lambda success, results: self._finish(handle, success, results))
-            QgsApplication.taskManager().addTask(task)
+            runner_task = QgsProcessingAlgRunnerTask(
+                algorithm, step.params, context, handle.feedback)
+            runner_task.setDescription(f"Cynogis : {algorithm.displayName()}")
+            runner_task.executed.connect(
+                lambda success, results: self._finish(handle, success, results))
+            QgsApplication.taskManager().addTask(runner_task)
         return handle
 
-    def progress(self, handle: _Handle | _FetchTask | LandcoverPreparationTask | None) -> float:
-        if isinstance(handle, LandcoverPreparationTask):
+    def progress(
+        self,
+        handle: (
+            _Handle
+            | _FetchTask
+            | LandcoverPreparationTask
+            | LandcoverSegmentationTask
+            | None
+        ),
+    ) -> float:
+        if isinstance(handle, (LandcoverPreparationTask, LandcoverSegmentationTask)):
             return float(handle.progress())
-
         return float(handle.feedback.progress()) if handle is not None else 0.0
 
     def pause(self, resume: Callable[[], None]) -> None:
         QTimer.singleShot(0, resume)  # après l'affichage et les requêtes en attente
 
-    def cancel(self, handle: _Handle | _FetchTask | LandcoverPreparationTask | None) -> None:
-        if isinstance(handle, LandcoverPreparationTask):
-            # Ne pas ignorer finished(): son rappel confirme l'arrêt réel.
+    def cancel(
+        self,
+        handle: (
+            _Handle
+            | _FetchTask
+            | LandcoverPreparationTask
+            | LandcoverSegmentationTask
+            | None
+        ),
+    ) -> None:
+        if isinstance(handle, (LandcoverPreparationTask, LandcoverSegmentationTask)):
+            # Le callback reste raccordé jusqu'à la terminaison effective.
             handle.cancel()
             return
-
         if handle is not None and not handle.cancelled:
             handle.cancelled = True
             handle.feedback.cancel()  # la tâche s'arrête et se termine en échec
