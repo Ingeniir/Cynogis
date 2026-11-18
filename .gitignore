@@ -70,4 +70,5 @@ graphify-out/graph.html
 # IDE et environnement local du développeur
 # =========================================================
 .idea/
+.openidea/
 .qgis_env.json

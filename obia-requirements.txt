@@ -1,0 +1,9 @@
+# Prototype OBIA : dépendances du Python de QGIS 4.2.1 (Python 3.12, win_amd64).
+# NumPy, SciPy, networkx, Pillow et packaging sont déjà présents dans l'installation QGIS testée et ne sont pas modifiés.
+# Installation : python-qgis.bat -m pip install --user --no-deps --only-binary=:all: --require-hashes -r obia-requirements.txt
+# Complément optionnel pour le prototype OBIA ; ne verrouille pas tout l'environnement QGIS.
+# --no-deps suppose des prérequis compatibles déjà installés ; vérifier avec pip check
+scikit-image==0.26.0 --hash=sha256:abed017474593cd3056ae0fe948d07d0747b27a085e92df5474f4955dd65aec0
+imageio==2.38.1 --hash=sha256:36d23eb7423d2fb63f637098758edb3d2df3687f7125e0a5ce8596572022dcf9
+tifffile==2026.10.15 --hash=sha256:3dcf6c56731a45c1f85c81e90dad922b0a380a2d639e77f71207e010f8ef0f7b
+lazy-loader==0.6 --hash=sha256:77253be3391b06124a0e16105bd663b6c54470af1a9ca8e1cf026f38d58ed056
