@@ -18,7 +18,11 @@ from qgis.core import (
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
 from ..core.jobs import PrepareLandcover, SegmentLandcover, Steps
-from ..core.landcover import PreparationConfig, validate_rgb_bands
+from ..core.landcover import (
+    PreparationConfig,
+    resolve_output_parent,
+    validate_rgb_bands,
+)
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
@@ -28,6 +32,21 @@ from .common import (
     get_vector_layer,
     source_path,
 )
+from .outputs import obia_output_root
+
+_OUTPUT_PARENT_HELP = (
+    "Facultatif. Omis : <projet>/mcp_outputs/obia/ choisi par Cynogis. Fourni : "
+    "dossier existant dans cette racine ; une valeur extérieure est refusée."
+)
+
+
+def _output_parent(value: str | None) -> tuple[Path, list[str]]:
+    """Destination imposée par Cynogis (voir core.landcover.resolve_output_parent)."""
+    root, warnings = obia_output_root()
+    try:
+        return resolve_output_parent(value, root), warnings
+    except ValueError as exc:
+        raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
 
 # Garde-fou pour cette inspection synchrone.
 # Les géométries plus complexes seront prises en charge par un job dédié.
@@ -259,7 +278,7 @@ def _build_preparation_step(
         aoi_layer_id: str,
         aoi_feature_id: int,
         rgb_bands: list[int],
-        output_parent: str,
+        output_parent: str | None,
         validity_policy: str,
 ) -> tuple[PrepareLandcover, list[str]]:
     """Capture les entrées sans transmettre d'objet QGIS à la tâche."""
@@ -270,23 +289,6 @@ def _build_preparation_step(
         )
     except ValueError as exc:
         raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
-
-    if not isinstance(output_parent, str) or not output_parent.strip():
-        _reject("Un dossier parent de sortie est obligatoire.")
-
-    try:
-        parent = Path(output_parent).expanduser()
-        if not parent.is_absolute():
-            _reject("Le dossier parent de sortie doit être un chemin absolu.")
-        parent = parent.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise ToolError(
-            ErrorCode.INVALID_PARAMS,
-            "Impossible de résoudre le dossier parent de sortie.",
-        ) from exc
-
-    if not parent.is_dir():
-        _reject("Le dossier parent de sortie doit être un dossier existant.")
 
     inspection = inspect_landcover_inputs(
         raster_layer_id=raster_layer_id,
@@ -342,6 +344,10 @@ def _build_preparation_step(
             "Le périmètre provient de l'état courant du tampon d'édition."
         )
 
+    # En dernier : la racine n'est créée que pour un appel par ailleurs valide.
+    parent, root_warnings = _output_parent(output_parent)
+    warnings.extend(root_warnings)
+
     step = PrepareLandcover(
         raster_path=Path(path_text),
         aoi_wkb=bytes(geometry.asWkb()),
@@ -370,23 +376,20 @@ def _build_preparation_step(
         "Trois indices distincts dans l'ordre rouge, vert, bleu.",
         items="integer",
     ),
-    "output_parent": Param(
-        "string",
-        "Chemin absolu d'un dossier existant pour les sorties.",
-    ),
     "validity_policy": Param(
         "string",
         "Politique explicite de validité des pixels.",
         enum=("respect_source_masks",),
     ),
+    "output_parent": Param("string", _OUTPUT_PARENT_HELP, required=False),
 })
 def prepare_landcover_inputs(
     raster_layer_id: str,
     aoi_layer_id: str,
     aoi_feature_id: int,
     rgb_bands: list[int],
-    output_parent: str,
     validity_policy: str,
+    output_parent: str | None = None,
 ) -> Steps:
     """Prépare les entrées OBIA dans un nouveau dossier, sans segmentation.
 
@@ -394,7 +397,8 @@ def prepare_landcover_inputs(
     Le périmètre doit déjà partager le SCR projeté métrique du raster.
     Produit les rasters de préparation et leur manifeste, sans modifier
     la source ni charger de couche. Exécution par job avec annulation
-    coopérative. Le dossier parent doit déjà exister.
+    coopérative. Sorties dans <projet>/mcp_outputs/obia/ (repli
+    ~/.cynogis/mcp_outputs/obia/ si le projet n'est pas enregistré).
     """
     step, warnings = _build_preparation_step(
         raster_layer_id=raster_layer_id,
@@ -461,11 +465,11 @@ def _segmentation_directory(value: str, name: str) -> Path:
 
 def _build_segmentation_step(
     preparation_directory: str,
-    output_parent: str,
+    output_parent: str | None,
     target_segment_area_m2: float,
     compactness: float,
     max_num_iter: int,
-) -> SegmentLandcover:
+) -> tuple[SegmentLandcover, list[str]]:
     """Valide les paramètres publics sans ouvrir de manifeste ou de raster."""
     # Import local : le catalogue ne doit pas charger le module de segmentation.
     # SlicConfig lui-même ne charge pas les dépendances de calcul.
@@ -483,7 +487,7 @@ def _build_segmentation_step(
     source = _segmentation_directory(
         preparation_directory, "preparation_directory"
     )
-    parent = _segmentation_directory(output_parent, "output_parent")
+    parent, warnings = _output_parent(output_parent)
 
     # Même règle que le moteur, appliquée aux chemins résolus.
     # Le moteur refait ce contrôle et demeure responsable de la validité
@@ -494,11 +498,12 @@ def _build_segmentation_step(
             "Le parent de sortie doit être extérieur au dossier de préparation.",
         )
 
-    return SegmentLandcover(
+    step = SegmentLandcover(
         preparation_directory=source,
         output_parent=parent,
         config=config,
     )
+    return step, warnings
 
 
 @tool(level=Level.CREATE, params={
@@ -508,7 +513,8 @@ def _build_segmentation_step(
     ),
     "output_parent": Param(
         "string",
-        "Dossier parent existant, absolu et extérieur à la préparation.",
+        _OUTPUT_PARENT_HELP + " Toujours extérieur au dossier de préparation.",
+        required=False,
     ),
     "target_segment_area_m2": Param(
         "number",
@@ -533,21 +539,22 @@ def _build_segmentation_step(
 })
 def segment_landcover(
     preparation_directory: str,
-    output_parent: str,
+    output_parent: str | None = None,
     target_segment_area_m2: float = 25.0,
     compactness: float = 10.0,
     max_num_iter: int = 10,
 ) -> Steps:
     """Segmente une préparation OBIA en objets non classés, via un job.
 
-    Produit segments.tif et segmentation.json dans un nouveau dossier.
+    Produit segments.tif et segmentation.json dans un nouveau dossier,
+    sous <projet>/mcp_outputs/obia/ (repli ~/.cynogis/mcp_outputs/obia/).
     Limites du moteur : un million de pixels et dix mille graines demandées.
     Aucun chargement de couche, classement de paysages ou vectorisation.
     Les contrôles des fichiers et le calcul s'exécutent dans la tâche.
     Annulation entre phases : un appel SLIC en cours n'est pas interrompu.
     Les valeurs par défaut sont expérimentales, pas une validation terrain.
     """
-    step = _build_segmentation_step(
+    step, root_warnings = _build_segmentation_step(
         preparation_directory=preparation_directory,
         output_parent=output_parent,
         target_segment_area_m2=target_segment_area_m2,
@@ -563,6 +570,7 @@ def segment_landcover(
     return ToolResult(
         data=report,
         warnings=[
+            *root_warnings,
             "Les identifiants sont des objets non classés, pas des classes "
             "de paysage. Aucune couche n'a été ajoutée au projet.",
             "La surface cible ne garantit ni le nombre final d'objets "

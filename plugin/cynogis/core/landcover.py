@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 
 def _validate_number(
@@ -156,3 +157,37 @@ class PreparationConfig:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def resolve_output_parent(requested: object, root: Path) -> Path:
+    """Dossier parent des sorties OBIA, toujours dans la racine imposée par Cynogis.
+
+    root : racine existante, absolue et déjà résolue par l'appelant.
+    requested None (paramètre omis) : la racine elle-même.
+    Sinon : chemin absolu d'un dossier existant dont le chemin résolu (liens
+    symboliques, jonctions, noms courts, « .. ») est la racine ou un descendant.
+
+    ValueError en cas de refus : jamais de repli ni de redirection silencieuse.
+    """
+    if not root.is_absolute():
+        raise ValueError("La racine de sortie doit être un chemin absolu.")
+    if requested is None:
+        return root
+    if not isinstance(requested, str) or not requested.strip():
+        raise ValueError("output_parent doit être omis ou être un chemin non vide.")
+    try:
+        path = Path(requested).expanduser()
+        if not path.is_absolute():
+            raise ValueError("output_parent doit être un chemin absolu.")
+        resolved = path.resolve(strict=True)
+        is_directory = resolved.is_dir()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("output_parent : dossier inaccessible ou chemin invalide.") from exc
+    if not is_directory:
+        raise ValueError("output_parent doit désigner un dossier existant.")
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(
+            f"output_parent est extérieur à la racine de sortie OBIA ({root}) : "
+            "refusé, aucune redirection. Omettre output_parent pour utiliser la racine."
+        )
+    return resolved

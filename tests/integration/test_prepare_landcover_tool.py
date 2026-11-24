@@ -69,12 +69,14 @@ import cynogis.plugin as plugin_mod  # noqa: E402
 from cynogis.bridge.protocol import PROTOCOL_VERSION, decode_request  # noqa: E402
 from cynogis.core.audit import AuditLog  # noqa: E402
 from cynogis.core.dispatcher import Dispatcher  # noqa: E402
+from cynogis.core.errors import ErrorCode, ToolError  # noqa: E402
 from cynogis.core.jobs import PrepareLandcover  # noqa: E402
 from cynogis.core.landcover import PreparationConfig  # noqa: E402
 from cynogis.core.policy import PermissionPolicy  # noqa: E402
 from cynogis.core.registry import Level, ToolRegistry  # noqa: E402
 from cynogis.landcover_processing import prepare as preparation  # noqa: E402
 from cynogis.tools import landcover  # noqa: E402
+from cynogis.tools import outputs as outputs_mod  # noqa: E402
 from cynogis.tools.landcover_guard import _PROPERTY_NAME as GUARD  # noqa: E402
 from cynogis.tools.tasks import ProcessingExecutor  # noqa: E402
 
@@ -127,8 +129,11 @@ class Env:
 
     def __init__(self):
         self.root = Path(tempfile.mkdtemp(prefix="cynogis_prepare_tool_"))
-        self.output = self.root / "sorties"
-        self.output.mkdir()
+        # Le projet du processus a pour dossier self.root (setPresetHomePath) :
+        # racine OBIA imposée = self.root/mcp_outputs/obia.
+        self.obia = self.root / "mcp_outputs" / "obia"
+        self.output = self.obia / "sorties"
+        self.output.mkdir(parents=True)
         self.layers, self.executors = [], []
 
     def raster(self, name="ortho", **kwargs):
@@ -193,11 +198,15 @@ def environment():
     app.setProperty(GUARD, "")
     STOP.clear()
     env = Env()
+    project = QgsProject.instance()
+    saved_home = project.presetHomePath()
+    project.setPresetHomePath(str(env.root))
     succeeded = False
     try:
         yield env
         succeeded = True
     finally:
+        project.setPresetHomePath(saved_home)
         STOP.set()
         for executor in env.executors:
             for task in list(executor._active):
@@ -263,7 +272,9 @@ def test_registry_discovers_tool_through_existing_module():
         catalog = dispatcher.dispatch(request("list_tools")).data["tools"]
         entry = next(e for e in catalog if e["name"] == TOOL)
         schema = entry["input_schema"]
-        assert sorted(schema["required"]) == sorted(signature)
+        # output_parent : facultatif (racine imposée par Cynogis si omis).
+        assert sorted(schema["required"]) == sorted(set(signature) - {"output_parent"})
+        assert inspect.signature(spec.handler).parameters["output_parent"].default is None
         assert schema["properties"]["rgb_bands"]["items"] == {"type": "integer"}
         assert schema["properties"]["validity_policy"]["enum"] == ["respect_source_masks"]
         dump = os.environ.get("CYNOGIS_CATALOG_DUMP")
@@ -305,6 +316,127 @@ def test_invalid_parameters_create_no_output():
             assert response.job_id is None, label
         assert env.outputs() == []
         assert dispatcher.jobs.running is None
+
+
+# --- Racine de sortie imposée : <projet>/mcp_outputs/obia ---------------------------------
+def _without_output_parent(raster, aoi, fid, env):
+    values = params(raster, aoi, fid, env.output)
+    del values["output_parent"]
+    return values
+
+
+def _tool_error(function, *args) -> ToolError:
+    try:
+        function(*args)
+    except ToolError as exc:
+        return exc
+    raise AssertionError("ToolError attendue")
+
+
+def test_output_parent_outside_root_is_refused_without_redirection():
+    with environment() as env:
+        raster, _ = env.raster()
+        aoi, fid = env.aoi()
+        dispatcher, audit = env.dispatcher()
+        outside = env.root / "dehors"                        # existe, hors racine
+        outside.mkdir()
+        response = dispatcher.dispatch(request(TOOL, **params(raster, aoi, fid, outside)))
+        assert response.error["code"] == "INVALID_PARAMS", response.error
+        assert "extérieur à la racine" in response.error["message"]
+        assert response.job_id is None and dispatcher.jobs.running is None
+        assert list(outside.iterdir()) == []                 # aucune redirection
+        assert env.outputs() == [] and [p.name for p in env.obia.iterdir()] == ["sorties"]
+        assert [e["ok"] for e in audit.recent(10) if e["tool"] == TOOL] == [False]
+
+
+def test_output_parent_omitted_uses_project_root():
+    with environment() as env:
+        raster, _ = env.raster()
+        aoi, fid = env.aoi()
+        dispatcher, audit = env.dispatcher()
+        started = dispatcher.dispatch(request(TOOL, **_without_output_parent(raster, aoi, fid,
+                                                                             env)))
+        assert started.ok and started.job_id, started.error
+        final = final_response(dispatcher, started.job_id)
+        assert final.ok, final.error
+        directory = Path(final.data["output_directory"])
+        assert directory.parent == env.obia.resolve()
+        assert not any("sans emplacement local" in w for w in final.warnings)
+        entries = [e for e in audit.recent(10) if e["tool"] == TOOL]
+        assert len(entries) == 1 and entries[0]["ok"]
+        assert all(Path(p).parent == directory for p in entries[0]["outputs"])
+
+
+def test_unsaved_project_falls_back_with_explicit_warning():
+    with environment() as env:
+        raster, _ = env.raster()
+        aoi, fid = env.aoi()
+        fallback = env.root / "repli"
+        project = QgsProject.instance()
+        project.setPresetHomePath("")
+        assert project.homePath() == ""                      # aucun emplacement local
+        with patched(outputs_mod, "FALLBACK_DIR", fallback):
+            step, warnings = landcover._build_preparation_step(
+                raster.id(), aoi.id(), fid, [1, 2, 3], None, "respect_source_masks")
+            assert step.output_parent == (fallback / "obia").resolve()
+            assert any("Projet sans emplacement local" in w for w in warnings)
+            # Dossier de l'ancienne racine : extérieur au repli, donc refusé.
+            error = _tool_error(landcover._build_preparation_step, raster.id(), aoi.id(),
+                                fid, [1, 2, 3], str(env.output), "respect_source_masks")
+            assert error.code == ErrorCode.INVALID_PARAMS
+        assert env.outputs() == []
+
+
+def test_unsaved_project_fallback_warning_reaches_final_response():
+    with environment() as env:
+        raster, _ = env.raster()
+        aoi, fid = env.aoi()
+        dispatcher, audit = env.dispatcher()
+        fallback = env.root / "repli"
+        QgsProject.instance().setPresetHomePath("")
+        with patched(outputs_mod, "FALLBACK_DIR", fallback):
+            started = dispatcher.dispatch(
+                request(TOOL, **_without_output_parent(raster, aoi, fid, env)))
+        assert started.ok and started.job_id, started.error
+        final = final_response(dispatcher, started.job_id)
+        assert final.ok, final.error
+        directory = Path(final.data["output_directory"])
+        assert directory.parent == (fallback / "obia").resolve()
+        assert sum("Projet sans emplacement local" in w for w in final.warnings) == 1
+        entries = [e for e in audit.recent(10) if e["tool"] == TOOL]
+        assert len(entries) == 1 and entries[0]["ok"]
+        assert env.outputs() == []                           # rien dans l'ancienne racine
+
+
+def test_inaccessible_project_home_is_refused_without_fallback():
+    with environment() as env:
+        raster, _ = env.raster()
+        aoi, fid = env.aoi()
+        dispatcher, _ = env.dispatcher()
+        missing = env.root / "projet_deplace"
+        fallback = env.root / "repli"
+        QgsProject.instance().setPresetHomePath(str(missing))
+        with patched(outputs_mod, "FALLBACK_DIR", fallback):
+            response = dispatcher.dispatch(
+                request(TOOL, **_without_output_parent(raster, aoi, fid, env)))
+        assert response.error["code"] == "WRITE_FAILED", response.error
+        assert response.job_id is None
+        assert not missing.exists() and not fallback.exists()
+
+
+def test_root_creation_failure_is_refused():
+    with environment() as env:
+        raster, _ = env.raster()
+        aoi, fid = env.aoi()
+        dispatcher, _ = env.dispatcher()
+        home = env.root / "projet_bloque"
+        home.mkdir()
+        (home / "mcp_outputs").write_text("fichier homonyme", encoding="utf-8")
+        QgsProject.instance().setPresetHomePath(str(home))
+        response = dispatcher.dispatch(
+            request(TOOL, **_without_output_parent(raster, aoi, fid, env)))
+        assert response.error["code"] == "WRITE_FAILED", response.error
+        assert (home / "mcp_outputs").is_file()
 
 
 def test_layer_id_and_feature_id_are_not_confused():

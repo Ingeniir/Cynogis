@@ -24,6 +24,7 @@ from .common import to_json_value
 GROUP = "Cynogis"
 OUTPUT_DIRNAME = "mcp_outputs"
 FALLBACK_DIR = Path.home() / ".cynogis" / OUTPUT_DIRNAME
+OBIA_DIRNAME = "obia"
 _SUFFIXES = {"sink": ".gpkg", "vectorDestination": ".gpkg", "rasterDestination": ".tif"}
 logger = logging.getLogger("cynogis.outputs")
 _WRITE_OK = getattr(QgsVectorFileWriter, "WriterError", QgsVectorFileWriter).NoError
@@ -40,6 +41,38 @@ def output_dir() -> tuple[Path, list[str]]:
                         "Demande à l'utilisateur d'enregistrer le projet.")
     directory.mkdir(parents=True, exist_ok=True)
     return directory, warnings
+
+
+def obia_output_root() -> tuple[Path, list[str]]:
+    """Racine résolue des sorties OBIA : <projet>/mcp_outputs/obia/.
+
+    Projet sans emplacement local (homePath vide) : repli explicite vers
+    ~/.cynogis/mcp_outputs/obia/, avec avertissement. Emplacement déclaré mais
+    inaccessible, ou racine impossible à créer : refus, sans repli.
+    """
+    home = QgsProject.instance().homePath()
+    warnings: list[str] = []
+    if home:
+        if not Path(home).is_dir():
+            raise ToolError(
+                ErrorCode.WRITE_FAILED,
+                f"Dossier du projet inaccessible : {home}. "
+                "Aucune sortie OBIA n'est écrite ailleurs.")
+        root = Path(home) / OUTPUT_DIRNAME / OBIA_DIRNAME
+    else:
+        root = FALLBACK_DIR / OBIA_DIRNAME
+        warnings.append(f"Projet sans emplacement local : sorties OBIA écrites dans {root}. "
+                        "Demande à l'utilisateur d'enregistrer le projet.")
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        resolved = root.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ToolError(ErrorCode.WRITE_FAILED,
+                        f"Racine de sortie OBIA inutilisable : {root} ({exc}).") from exc
+    if not resolved.is_dir():
+        raise ToolError(ErrorCode.WRITE_FAILED,
+                        f"La racine de sortie OBIA n'est pas un dossier : {root}.")
+    return resolved, warnings
 
 
 def add_to_project(path: Path, name: str, raster: bool = False) -> QgsMapLayer:

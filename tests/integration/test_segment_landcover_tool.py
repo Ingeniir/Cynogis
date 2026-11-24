@@ -70,6 +70,7 @@ from cynogis.landcover_processing import persist  # noqa: E402
 from cynogis.landcover_processing.prepare import prepare_native_inputs  # noqa: E402
 from cynogis.landcover_processing.segment import SlicConfig  # noqa: E402
 from cynogis.tools import landcover  # noqa: E402
+from cynogis.tools import outputs as outputs_mod  # noqa: E402
 from cynogis.tools import tasks as tasks_mod  # noqa: E402
 from cynogis.tools.landcover_guard import _PROPERTY_NAME as GUARD  # noqa: E402
 from cynogis.tools.tasks import ProcessingExecutor  # noqa: E402
@@ -118,8 +119,11 @@ class Env:
 
     def __init__(self):
         self.root = Path(tempfile.mkdtemp(prefix="cynogis_segment_tool_")).resolve()
-        self.output = self.root / "segmentations"
-        self.output.mkdir()
+        # Le projet du processus a pour dossier self.root (setPresetHomePath) :
+        # racine OBIA imposée = self.root/mcp_outputs/obia.
+        self.obia = self.root / "mcp_outputs" / "obia"
+        self.output = self.obia / "segmentations"
+        self.output.mkdir(parents=True)
         self.executors = []
         self.prep = self._prepare()
 
@@ -139,7 +143,7 @@ class Env:
         xmax, ymin = X0 + PIXEL * SIZE, Y0 - PIXEL * SIZE
         aoi = ogr.CreateGeometryFromWkt(
             f"POLYGON (({X0} {ymin}, {xmax} {ymin}, {xmax} {Y0}, {X0} {Y0}, {X0} {ymin}))")
-        parent = self.root / "preparations"
+        parent = self.obia / "preparations"
         parent.mkdir()
         report = prepare_native_inputs(
             raster_path=source, aoi_wkb=bytes(aoi.ExportToWkb()), aoi_crs_wkt=_wkt(),
@@ -182,11 +186,15 @@ def environment():
     app.setProperty(GUARD, "")
     STOP.clear()
     env = Env()
+    project = QgsProject.instance()
+    saved_home = project.presetHomePath()
+    project.setPresetHomePath(str(env.root))
     succeeded = False
     try:
         yield env
         succeeded = True
     finally:
+        project.setPresetHomePath(saved_home)
         STOP.set()
         for executor in env.executors:
             for task in list(executor._active):
@@ -278,7 +286,7 @@ def test_registry_catalog_matches_signature():
         assert entry["level"] == int(Level.CREATE)
         schema = entry["input_schema"]
         properties = schema["properties"]
-        assert sorted(schema["required"]) == ["output_parent", "preparation_directory"]
+        assert schema["required"] == ["preparation_directory"]  # output_parent facultatif
         assert properties["target_segment_area_m2"]["default"] == 25.0
         assert properties["compactness"]["default"] == 10.0
         assert properties["max_num_iter"] == {
@@ -429,13 +437,14 @@ def test_params_prevalidation_reads_nothing():
                 patched(persist, "_load_inputs", forbidden), \
                 patched(persist, "_read_json", forbidden):
             # Dossier vide accepté ici : seule la tâche contrôlera son contenu.
-            step = landcover._build_segmentation_step(
+            step, _ = landcover._build_segmentation_step(
                 str(empty), str(env.output), 25.0, 10.0, 10)
         assert step.preparation_directory == empty and step.output_parent == env.output
         assert env.outputs() == [] and guard_free()
 
-        aliases = {"alias de la préparation": (env.root / "alias_prep", env.prep),
-                   "alias vers l'intérieur": (env.root / "alias_dedans", env.prep / "x")}
+        # Liens créés DANS la racine OBIA : seul le contrôle préparation/sortie est en jeu.
+        aliases = {"alias de la préparation": (env.obia / "alias_prep", env.prep),
+                   "alias vers l'intérieur": (env.obia / "alias_dedans", env.prep / "x")}
         (env.prep / "x").mkdir()
         tested = []
         for label, (link, target) in aliases.items():
@@ -447,7 +456,8 @@ def test_params_prevalidation_reads_nothing():
                 landcover._build_segmentation_step(
                     str(env.prep), str(link), 25.0, 10.0, 10)
             except ToolError as exc:
-                assert exc.code == ErrorCode.INVALID_PARAMS and "extérieur" in exc.message
+                assert exc.code == ErrorCode.INVALID_PARAMS
+                assert "dossier de préparation" in exc.message, exc.message
             else:
                 raise AssertionError(f"alias non détecté : {label}")
         print(f"alias testés : {tested}")
@@ -527,6 +537,26 @@ def test_real_end_to_end_with_audit():
         assert env.fingerprints() == before
         assert sorted(QgsProject.instance().mapLayers()) == layers_before
         assert guard_free()
+
+
+def test_real_unsaved_project_fallback_warning_reaches_final_response():
+    with environment() as env:
+        dispatcher, audit = env.dispatcher()
+        fallback = env.root / "repli"
+        QgsProject.instance().setPresetHomePath("")
+        with patched(outputs_mod, "FALLBACK_DIR", fallback):
+            started = dispatcher.dispatch(
+                request(TOOL, preparation_directory=str(env.prep)))   # output_parent omis
+        assert started.ok and started.job_id, started.error
+        final = final_response(dispatcher, started.job_id)
+        assert final.ok, final.error
+        directory = Path(final.data["output_directory"])
+        assert directory.parent == (fallback / "obia").resolve()
+        assert len(final.warnings) == 5
+        assert final.warnings[0].startswith("Projet sans emplacement local")
+        entries = [e for e in audit.recent(10) if e["tool"] == TOOL]
+        assert len(entries) == 1 and entries[0]["ok"]
+        assert env.outputs() == [] and guard_free()
 
 
 # --- 9. Préparation incomplète ou manifeste invalide : échec dans la tâche ------------------
@@ -622,11 +652,15 @@ engines = ("cynogis.landcover_processing.persist", "cynogis.landcover_processing
            "skimage", "scipy")
 print("catalogue", [m for m in engines if m in sys.modules])
 from cynogis.tools import landcover
+import shutil
+from qgis.core import QgsProject
 root = Path(tempfile.mkdtemp()).resolve()
-(root / "prep").mkdir(); (root / "out").mkdir()
-landcover._build_segmentation_step(str(root / "prep"), str(root / "out"), 25.0, 10.0, 10)
+QgsProject.instance().setPresetHomePath(str(root))  # racine OBIA dans le dossier temporaire
+out = root / "mcp_outputs" / "obia" / "out"
+(root / "prep").mkdir(); out.mkdir(parents=True)
+landcover._build_segmentation_step(str(root / "prep"), str(out), 25.0, 10.0, 10)
 print("appel", [m for m in engines if m in sys.modules])
-(root / "prep").rmdir(); (root / "out").rmdir(); root.rmdir()
+shutil.rmtree(root)
 """
 
 

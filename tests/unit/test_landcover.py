@@ -1,11 +1,13 @@
 import json
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 
 from cynogis.core.landcover import (
     LandcoverConfig,
     PreparationConfig,
+    resolve_output_parent,
     validate_rgb_bands,
 )
 
@@ -192,3 +194,105 @@ def test_preparation_json_serialization():
     serialized = json.dumps(config.to_dict(), allow_nan=False)
 
     assert json.loads(serialized) == config.to_dict()
+
+
+# --- Racine de sortie OBIA imposée (resolve_output_parent) ----------------------------------
+def _alias(link, target) -> bool:
+    """Lien symbolique, sinon jonction Windows ; False si le système refuse les deux."""
+    import os
+
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        pass
+    try:
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+        return True
+    except (ImportError, OSError):
+        return False
+
+
+@pytest.fixture
+def root(tmp_path):
+    directory = tmp_path / "projet" / "mcp_outputs" / "obia"
+    directory.mkdir(parents=True)
+    return directory.resolve()
+
+
+def test_output_parent_omitted_is_root(root):
+    assert resolve_output_parent(None, root) == root
+
+
+def test_output_parent_inside_root_is_resolved(root):
+    inside = root / "lot" / "zone"
+    inside.mkdir(parents=True)
+    assert resolve_output_parent(str(root), root) == root
+    assert resolve_output_parent(str(inside), root) == inside
+    # « .. » restant dans la racine : accepté, renvoyé sous forme résolue.
+    assert resolve_output_parent(str(inside / ".." / "zone"), root) == inside
+
+
+@pytest.mark.parametrize("value", ["", "   ", 3, b"bytes", True])
+def test_output_parent_blank_or_not_text_is_refused(root, value):
+    with pytest.raises(ValueError, match="omis ou être un chemin non vide"):
+        resolve_output_parent(value, root)
+
+
+def test_output_parent_relative_missing_or_file_is_refused(root):
+    a_file = root / "fichier.txt"
+    a_file.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="absolu"):
+        resolve_output_parent("lot", root)
+    with pytest.raises(ValueError, match="inaccessible"):
+        resolve_output_parent(str(root / "absent"), root)
+    with pytest.raises(ValueError, match="dossier existant"):
+        resolve_output_parent(str(a_file), root)
+
+
+def test_output_parent_outside_root_is_refused_without_redirection(root):
+    outside = root.parents[2] / "ailleurs"
+    outside.mkdir()
+    before = sorted(root.iterdir())
+    for value in (outside, root.parent, root / ".." / ".." / ".." / "ailleurs"):
+        with pytest.raises(ValueError, match="extérieur à la racine"):
+            resolve_output_parent(str(value), root)
+    # Préfixe textuel commun, mais dossier frère : refusé.
+    sibling = root.parent / "obia_bis"
+    sibling.mkdir()
+    with pytest.raises(ValueError, match="extérieur à la racine"):
+        resolve_output_parent(str(sibling), root)
+    assert sorted(root.iterdir()) == before          # rien créé dans la racine
+
+
+def test_output_parent_alias_is_judged_on_resolved_path(root):
+    outside = root.parents[2] / "cible_externe"
+    outside.mkdir()
+    inside = root / "cible_interne"
+    inside.mkdir()
+    out_link = root / "alias_vers_dehors"            # alias DANS la racine, cible dehors
+    in_link = root.parents[2] / "alias_vers_dedans"  # alias DEHORS, cible dans la racine
+    if not (_alias(out_link, outside) and _alias(in_link, inside)):
+        pytest.skip("ni lien symbolique ni jonction disponibles sur ce système")
+    with pytest.raises(ValueError, match="extérieur à la racine"):
+        resolve_output_parent(str(out_link), root)
+    with pytest.raises(ValueError, match="extérieur à la racine"):
+        resolve_output_parent(str(out_link / "."), root)
+    assert resolve_output_parent(str(in_link), root) == inside
+
+
+def test_output_parent_case_variant_on_windows(root):
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("casse significative hors Windows")
+    inside = root / "Lot"
+    inside.mkdir()
+    assert resolve_output_parent(str(inside).upper(), root) == inside
+
+
+def test_output_root_must_be_absolute():
+    with pytest.raises(ValueError, match="absolu"):
+        resolve_output_parent(None, Path("relatif"))
