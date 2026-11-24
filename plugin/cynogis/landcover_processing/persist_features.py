@@ -16,6 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from ..core.landcover_execution import FeatureExtractionControl
 from .object_features import extract_object_features
 
 
@@ -76,7 +77,7 @@ def _check_tables(objects, edges, labels, mask, resolution: float) -> None:
     for axis, limit in zip(('row', 'col'), mask.shape, strict=True):
         lo, hi = objects[f'{axis}_min'], objects[f'{axis}_max_exclusive']
         center = objects[f'center_{axis}']
-        if not np.all((lo >= 0) &(lo < hi) & (hi <= limit)
+        if not np.all((lo >= 0) & (lo < hi) & (hi <= limit)
                       & (lo + 0.5 <= center) & (center <= hi - 0.5)):
             raise RuntimeError(f"Emprise ou centre invalide : {axis}.")
     a, b = edges['segment_a'], edges['segment_b']
@@ -110,6 +111,7 @@ def _save_table(path: Path, array) -> dict:
 
 def persist_object_features(
     *, preparation_directory: Path, segmentation_directory: Path, output_parent: Path,
+    control: FeatureExtractionControl | None = None,
 ) -> dict[str, Any]:
     """Écrit objects.npy, edges.npy et features.json dans un nouveau features_*.
 
@@ -117,7 +119,15 @@ def persist_object_features(
     Leurs cinq + deux fichiers sont identifiés par contenu. Une préparation de
     même grille mais produite par une autre exécution n'est pas interchangeable.
     Aucun parcours de chemin ni nom de fichier n'est dicté par les manifestes.
+    control : progression par phases et annulation coopérative aux checkpoints
+    (FeatureExtractionCancelledError) ; un calcul en cours n'est pas interrompu.
+    Aucun callback après la publication de features.json.
     """
+    if control is None:
+        control = FeatureExtractionControl()
+    if not isinstance(control, FeatureExtractionControl):
+        raise ValueError("control doit être un FeatureExtractionControl.")
+    control.checkpoint(0)
     import numpy as np
     from osgeo import gdal
 
@@ -129,6 +139,7 @@ def persist_object_features(
     if prep == seg or any(parent.is_relative_to(src) for src in (prep, seg)):
         raise ValueError("Sources distinctes requises ; sortie interdite dans les sources.")
 
+    control.checkpoint(10)
     before = _snapshot(prep, seg)
     manifest = io._read_json(seg / 'segmentation.json')
     version = manifest.get('schema_version')
@@ -143,6 +154,7 @@ def persist_object_features(
     if not isinstance(manifest.get('grid'), dict):
         raise ValueError("Grille de segmentation absente.")
 
+    control.checkpoint(30)
     rgb, mask, grid = io._load_inputs(prep)
     labels, label_grid, label_masks, _ = io._read_raster(
         seg / 'segments.tif', bands=1, data_type=gdal.GDT_UInt32,
@@ -151,14 +163,18 @@ def persist_object_features(
     io._same_grid(label_grid, manifest['grid'])
     if not np.all(label_masks[0]) or not np.array_equal(labels > 0, mask):
         raise ValueError("Les labels ou le masque implicite ne respectent pas analysis_mask.")
+    control.checkpoint(50)
     resolution = float(grid['geotransform'][1])
     tables = extract_object_features(rgb, labels, mask, pixel_size_m=resolution)
     _check_tables(tables.objects, tables.edges, labels, mask, resolution)
+    control.checkpoint(75)
 
     run = Path(tempfile.mkdtemp(prefix='features_', dir=parent))
     try:
         objects = _save_table(run / 'objects.npy', tables.objects)
+        control.checkpoint(85)
         edges = _save_table(run / 'edges.npy', tables.edges)
+        control.checkpoint(90)
         report = {
             'schema_version': 1, 'scope': 'unclassified_object_features', 'status': 'complete',
             'run_id': run.name, 'output_directory': str(run),
@@ -187,8 +203,10 @@ def persist_object_features(
                        encoding='utf-8')
         if io._read_json(tmp) != report:
             raise RuntimeError("Le manifeste des caractéristiques n'est pas relu à l'identique.")
+        control.checkpoint(95)
         if _snapshot(prep, seg) != before:
             raise RuntimeError("Les sources ont changé pendant l'extraction des caractéristiques.")
+        control.checkpoint(99)
         tmp.replace(run / 'features.json')
         return report
     except BaseException as original:

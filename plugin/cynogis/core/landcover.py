@@ -191,3 +191,31 @@ def resolve_output_parent(requested: object, root: Path) -> Path:
             "refusé, aucune redirection. Omettre output_parent pour utiliser la racine."
         )
     return resolved
+
+
+@dataclass(frozen=True)
+class DelineationConfig:
+    """Fusion des objets segmentés en unités délimitées.
+
+    color_distance_max :
+        distance euclidienne maximale entre moyennes RGB (unités 0..255) pour
+        fusionner deux unités voisines. 0 : aucune fusion par similarité.
+
+    min_mapping_area_m2 :
+        une unité plus petite est rattachée à sa voisine la plus proche en
+        couleur. Une unité sans voisine (îlot isolé) est conservée et signalée.
+
+    Valeurs par défaut expérimentales, pas une validation terrain.
+    """
+
+    color_distance_max: float = 12.0
+    min_mapping_area_m2: float = 150.0
+
+    def __post_init__(self) -> None:
+        _validate_number("color_distance_max", self.color_distance_max, allow_zero=True)
+        _validate_number("min_mapping_area_m2", self.min_mapping_area_m2, allow_zero=True)
+        if self.color_distance_max > 442:  # diagonale du cube RGB : tout fusionner
+            raise ValueError("color_distance_max doit être au plus 442.")
+
+    def to_dict(self) -> dict:
+        return asdict(self)

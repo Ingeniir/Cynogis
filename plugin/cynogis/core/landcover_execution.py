@@ -61,3 +61,40 @@ class SegmentationControl(PreparationControl):
     def check_cancelled(self) -> None:
         if self.is_cancelled is not None and self.is_cancelled():
             raise SegmentationCancelledError("Segmentation OBIA annulée.")
+
+
+
+
+class FeatureExtractionCancelledError(Exception):
+    """Annulation de l'extraction des caractéristiques avant publication."""
+
+
+@dataclass(frozen=True)
+class FeatureExtractionControl(PreparationControl):
+    """Checkpoints de persist_object_features ; mêmes règles que la segmentation."""
+
+    def check_cancelled(self) -> None:
+        if self.is_cancelled is not None and self.is_cancelled():
+            raise FeatureExtractionCancelledError("Extraction des caractéristiques OBIA annulée.")
+
+
+class DelineationCancelledError(Exception):
+    """Annulation de la délimitation avant publication du manifeste."""
+
+
+@dataclass(frozen=True)
+class DelineationControl(PreparationControl):
+    """Checkpoints de persist_delineation ; mêmes règles que la segmentation."""
+
+    def check_cancelled(self) -> None:
+        if self.is_cancelled is not None and self.is_cancelled():
+            raise DelineationCancelledError("Délimitation OBIA annulée.")
+
+
+# Annulations coopératives reconnues par le gestionnaire de jobs.
+LANDCOVER_CANCELLED = (
+    PreparationCancelledError,
+    SegmentationCancelledError,
+    FeatureExtractionCancelledError,
+    DelineationCancelledError,
+)
