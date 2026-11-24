@@ -205,11 +205,12 @@ class DelineationConfig:
         une unité plus petite est rattachée à sa voisine la plus proche en
         couleur. Une unité sans voisine (îlot isolé) est conservée et signalée.
 
-    Valeurs par défaut expérimentales, pas une validation terrain.
+    Valeurs par défaut réglées sur l'orthophoto IGN de Saint-Pierre (0,5 m) pour des
+    unités de la taille d'une parcelle ; expérimentales, pas une validation terrain.
     """
 
-    color_distance_max: float = 12.0
-    min_mapping_area_m2: float = 150.0
+    color_distance_max: float = 15.0
+    min_mapping_area_m2: float = 500.0
 
     def __post_init__(self) -> None:
         _validate_number("color_distance_max", self.color_distance_max, allow_zero=True)

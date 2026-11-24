@@ -679,19 +679,19 @@ def _ellipsoidal_total(layer) -> tuple[float, str]:
         "number",
         "Écart de couleur RGB maximal (0 à 442, unités 0..255) pour fusionner deux "
         "unités voisines ; 0 désactive la fusion par similarité.",
-        required=False, default=12.0, minimum=0, maximum=442),
+        required=False, default=15.0, minimum=0, maximum=442),
     "min_mapping_area_m2": Param(
         "number",
         "Surface minimale de cartographie en m² : une unité plus petite rejoint sa "
         "voisine la plus proche en couleur ; 0 désactive.",
-        required=False, default=150.0, minimum=0),
+        required=False, default=500.0, minimum=0),
 })
 def delineate_landcover(
     preparation_directory: str,
     segmentation_directory: str,
     features_directory: str,
-    color_distance_max: float = 12.0,
-    min_mapping_area_m2: float = 150.0,
+    color_distance_max: float = 15.0,
+    min_mapping_area_m2: float = 500.0,
 ) -> Steps:
     """Délimite des unités homogènes en fusionnant les objets segmentés, via un job.
 
