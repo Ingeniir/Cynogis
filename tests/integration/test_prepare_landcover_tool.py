@@ -40,7 +40,9 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "plugin"))
 else:
     import pytest
+    from _pyqgis_abi import skip_if_foreign_pyqgis
 
+    skip_if_foreign_pyqgis(pytest)  # avant tout chargement de DLL PyQGIS
     pytest.importorskip("qgis.core", exc_type=ImportError)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
