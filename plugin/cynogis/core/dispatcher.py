@@ -192,7 +192,12 @@ class Dispatcher:
     def _to_response(request_id: str, spec: ToolSpec, result: Any,
                      error: BaseException | None) -> tuple[Response, list[str]]:
         if isinstance(error, ToolError):
-            return Response.failure(request_id, error), []
+            # Fichiers complets conservés (annulation tardive) : tracés dans l'audit, sans
+            # changer la réponse. Uniquement le détail structuré, jamais le message.
+            details = error.details if isinstance(error.details, dict) else {}
+            retained = details.get("retained_output_directory")
+            return Response.failure(request_id, error), (
+                [retained] if isinstance(retained, str) and retained else [])
         if error is not None:
             logger.error("Erreur interne dans %s", spec.name, exc_info=error)
             return Response.failure(request_id, ToolError(

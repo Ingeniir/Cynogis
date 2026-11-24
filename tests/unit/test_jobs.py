@@ -583,6 +583,80 @@ def test_obia_late_cancellation_retains_complete_outputs(tmp_path):
     assert dispatcher.jobs.running is None
 
 
+def _audited(audit, tool_name):
+    return [e for e in audit.recent(50) if e["tool"] == tool_name]
+
+
+def test_obia_late_cancellation_retained_directory_is_audited_once(tmp_path):
+    dispatcher, executor, audit, published = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+    dispatcher.dispatch(_req("cancel_job", job_id=job_id))
+    executor.finish({"status": "complete", "output_directory": "completed-output"})
+
+    final = dispatcher.dispatch(_req("get_job_status", job_id=job_id))
+    again = dispatcher.dispatch(_req("get_job_status", job_id=job_id))
+
+    assert final.ok is False and final.error["code"] == "CANCELLED"  # statut préservé
+    assert again.ok is False and again.error == final.error
+    entries = _audited(audit, "obia_prepare_test")
+    assert len(entries) == 1                                         # audit unique
+    assert entries[0]["ok"] is False and entries[0]["error_code"] == "CANCELLED"
+    assert entries[0]["outputs"] == ["completed-output"]
+    assert final.audit_id == entries[0]["audit_id"]
+    assert published == []                                           # rien publié
+
+
+def test_obia_cancellation_without_output_audits_no_output(tmp_path):
+    dispatcher, executor, audit, _ = make_obia(tmp_path)
+    job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
+    dispatcher.dispatch(_req("cancel_job", job_id=job_id))
+    executor.finish(error=PreparationCancelledError("Arrêt confirmé."))
+
+    final = dispatcher.dispatch(_req("get_job_status", job_id=job_id))
+    assert final.error["code"] == "CANCELLED"
+    entries = _audited(audit, "obia_prepare_test")
+    assert len(entries) == 1 and entries[0]["outputs"] == []
+
+
+@pytest.mark.parametrize("details", [
+    {"retained_output_directory": Path("sortie")},   # non textuel
+    {"retained_output_directory": ""},
+    {"retained_output_directory": ["sortie"]},
+    {"output_directory": "sortie"},                  # autre clé
+    None,
+])
+def test_audit_retained_output_requires_structured_text(tmp_path, details):
+    dispatcher, _, audit = make(tmp_path)
+
+    @tool(level=Level.CREATE)
+    def refuse_avec_details():
+        """Outil factice : erreur dont le message cite un dossier."""
+        raise ToolError(ErrorCode.CANCELLED,
+                        "Fichiers conservés dans retained_output_directory=sortie", details)
+
+    dispatcher.registry.register(refuse_avec_details)
+    response = dispatcher.dispatch(_req("refuse_avec_details"))
+    assert response.ok is False and response.error["code"] == "CANCELLED"
+    entries = _audited(audit, "refuse_avec_details")
+    assert len(entries) == 1 and entries[0]["outputs"] == []        # rien tiré du message
+
+
+def test_audit_retained_output_for_direct_tool_error(tmp_path):
+    dispatcher, _, audit = make(tmp_path)
+
+    @tool(level=Level.CREATE)
+    def refuse_structure():
+        """Outil factice : détail structuré textuel."""
+        raise ToolError(ErrorCode.CANCELLED, "Annulé.",
+                        {"retained_output_directory": "D:/sorties/obia_x"})
+
+    dispatcher.registry.register(refuse_structure)
+    response = dispatcher.dispatch(_req("refuse_structure"))
+    assert response.ok is False
+    assert response.error["details"] == {"retained_output_directory": "D:/sorties/obia_x"}
+    assert _audited(audit, "refuse_structure")[0]["outputs"] == ["D:/sorties/obia_x"]
+
+
 def test_obia_qgis_cancel_without_cancel_job(tmp_path):
     dispatcher, executor, _, published = make_obia(tmp_path)
     job_id = dispatcher.dispatch(_req("obia_prepare_test")).job_id
