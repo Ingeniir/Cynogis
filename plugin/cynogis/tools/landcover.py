@@ -17,8 +17,15 @@ from qgis.core import (
 
 from ..core.dispatcher import ToolResult
 from ..core.errors import ErrorCode, ToolError
-from ..core.jobs import PrepareLandcover, SegmentLandcover, Steps
+from ..core.jobs import (
+    DelineateLandcover,
+    ExtractLandcoverFeatures,
+    PrepareLandcover,
+    SegmentLandcover,
+    Steps,
+)
 from ..core.landcover import (
+    DelineationConfig,
     PreparationConfig,
     resolve_output_parent,
     validate_rgb_bands,
@@ -26,13 +33,16 @@ from ..core.landcover import (
 from ..core.registry import Level, tool
 from ..core.schema import Param
 from .common import (
+    area_m2,
+    area_method,
     clean_number,
     crs_info,
+    distance_area,
     get_raster_layer,
     get_vector_layer,
     source_path,
 )
-from .outputs import obia_output_root
+from .outputs import add_to_project, obia_output_root
 
 _OUTPUT_PARENT_HELP = (
     "Facultatif. Omis : <projet>/mcp_outputs/obia/ choisi par Cynogis. Fourni : "
@@ -580,5 +590,150 @@ def segment_landcover(
             "Les diagnostics sont descriptifs : ils ne valident pas "
             "la qualité géographique des limites.",
         ],
+        outputs=[str(directory / name) for name in report["files"]],
+    )
+
+
+def _sources(**paths: str) -> tuple[dict[str, Path], Path, list[str]]:
+    """Dossiers sources résolus et parent de sortie, distincts et non imbriqués."""
+    resolved = {name: _segmentation_directory(value, name) for name, value in paths.items()}
+    if len(set(resolved.values())) != len(resolved):
+        raise ToolError(ErrorCode.INVALID_PARAMS, "Les dossiers sources doivent être distincts.")
+    return resolved, *_checked_parent(resolved.values())
+
+
+def _checked_parent(sources) -> tuple[Path, list[str]]:
+    # Le parent vient toujours de la racine imposée : pas de paramètre libre ici.
+    parent, warnings = _output_parent(None)
+    if any(parent == src or src in parent.parents for src in sources):
+        raise ToolError(ErrorCode.INVALID_PARAMS,
+                        "La racine de sortie OBIA ne doit pas être dans un dossier source.")
+    return parent, warnings
+
+
+@tool(level=Level.CREATE, params={
+    "preparation_directory": Param(
+        "string", "Chemin absolu du dossier produit par prepare_landcover_inputs."),
+    "segmentation_directory": Param(
+        "string", "Chemin absolu du dossier produit par segment_landcover."),
+})
+def extract_landcover_features(
+    preparation_directory: str,
+    segmentation_directory: str,
+) -> Steps:
+    """Calcule les caractéristiques des objets segmentés (couleur, emprise, voisinage).
+
+    Produit objects.npy, edges.npy et features.json dans un nouveau dossier, sous
+    <projet>/mcp_outputs/obia/ (repli ~/.cynogis/mcp_outputs/obia/). Les sources
+    sont vérifiées par empreinte : la préparation doit être celle de la segmentation.
+    Exécution par job avec annulation coopérative. Aucune couche ajoutée au projet,
+    aucune classification. Étape préalable à delineate_landcover.
+    """
+    sources, parent, warnings = _sources(
+        preparation_directory=preparation_directory,
+        segmentation_directory=segmentation_directory,
+    )
+    step = ExtractLandcoverFeatures(
+        preparation_directory=sources["preparation_directory"],
+        segmentation_directory=sources["segmentation_directory"],
+        output_parent=parent,
+    )
+    report = yield step
+    directory = Path(report["output_directory"])
+    return ToolResult(
+        data=report,
+        warnings=[*warnings, "Caractéristiques descriptives d'objets non classés."],
+        outputs=[str(directory / name) for name in report["files"]],
+    )
+
+
+def _ellipsoidal_total(layer) -> tuple[float, str]:
+    da = distance_area(layer.crs())
+    request = QgsFeatureRequest().setNoAttributes()
+    # ponytail: parcours sur le thread principal, borné par le million de pixels du moteur
+    total = sum(area_m2(da, feature.geometry()) for feature in layer.getFeatures(request))
+    return total, area_method(da)
+
+
+@tool(level=Level.CREATE, params={
+    "preparation_directory": Param(
+        "string", "Chemin absolu du dossier produit par prepare_landcover_inputs."),
+    "segmentation_directory": Param(
+        "string", "Chemin absolu du dossier produit par segment_landcover."),
+    "features_directory": Param(
+        "string", "Chemin absolu du dossier produit par extract_landcover_features."),
+    "color_distance_max": Param(
+        "number",
+        "Écart de couleur RGB maximal (0 à 442, unités 0..255) pour fusionner deux "
+        "unités voisines ; 0 désactive la fusion par similarité.",
+        required=False, default=12.0, minimum=0, maximum=442),
+    "min_mapping_area_m2": Param(
+        "number",
+        "Surface minimale de cartographie en m² : une unité plus petite rejoint sa "
+        "voisine la plus proche en couleur ; 0 désactive.",
+        required=False, default=150.0, minimum=0),
+})
+def delineate_landcover(
+    preparation_directory: str,
+    segmentation_directory: str,
+    features_directory: str,
+    color_distance_max: float = 12.0,
+    min_mapping_area_m2: float = 150.0,
+) -> Steps:
+    """Délimite des unités homogènes en fusionnant les objets segmentés, via un job.
+
+    Dernière étape OBIA : produit regions.tif, delineation.gpkg (un polygone par
+    unité) et delineation.json sous <projet>/mcp_outputs/obia/, puis ajoute la
+    couche des unités au groupe « Cynogis ». Les unités sont des zones homogènes en
+    couleur, pas des classes d'occupation du sol. Surfaces : plane projetée 2D par
+    unité (area_plan_m2) et total ellipsoïdal de référence.
+    """
+    try:
+        config = DelineationConfig(color_distance_max=color_distance_max,
+                                   min_mapping_area_m2=min_mapping_area_m2)
+    except ValueError as exc:
+        raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
+    sources, parent, warnings = _sources(
+        preparation_directory=preparation_directory,
+        segmentation_directory=segmentation_directory,
+        features_directory=features_directory,
+    )
+    step = DelineateLandcover(
+        preparation_directory=sources["preparation_directory"],
+        segmentation_directory=sources["segmentation_directory"],
+        features_directory=sources["features_directory"],
+        output_parent=parent,
+        config=config,
+    )
+    report = yield step
+
+    directory = Path(report["output_directory"])
+    layer = add_to_project(directory / "delineation.gpkg", f"Unités OBIA {report['run_id']}")
+    total, method = _ellipsoidal_total(layer)
+    diagnostics = report["diagnostics"]
+    warnings = [
+        *warnings,
+        "Unités homogènes en couleur, non classées : ce ne sont pas des habitats ni des "
+        "classes d'occupation du sol. Contrôle visuel et terrain indispensables.",
+        "Limites en marches d'escalier sur la grille du raster, non simplifiées.",
+        "Paramètres de fusion expérimentaux, pas une validation terrain.",
+    ]
+    if diagnostics["isolated_small_units"]:
+        warnings.append(
+            f"{diagnostics['isolated_small_units']} unités isolées restent plus petites "
+            "que la surface minimale de cartographie.")
+    return ToolResult(
+        data={
+            **report,
+            "layer": {"layer_id": layer.id(), "name": layer.name(),
+                      "feature_count": layer.featureCount()},
+            "areas": {
+                "total_plan_m2": diagnostics["analysis_area_m2"],
+                "total_plan_method": report["area_method"],
+                "total_ellipsoidal_m2": total,
+                "total_ellipsoidal_method": method,
+            },
+        },
+        warnings=warnings,
         outputs=[str(directory / name) for name in report["files"]],
     )

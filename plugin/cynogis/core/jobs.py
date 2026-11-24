@@ -26,11 +26,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from .cleanup import run_cleanup_steps
 from .errors import ErrorCode, ToolError
-from .landcover import PreparationConfig
-from .landcover_execution import (
-    PreparationCancelledError,
-    SegmentationCancelledError,
-)
+from .landcover import DelineationConfig, PreparationConfig
+from .landcover_execution import LANDCOVER_CANCELLED
 
 if TYPE_CHECKING:
     from ..landcover_processing.segment import SlicConfig
@@ -102,6 +99,50 @@ class SegmentLandcover:
             raise ValueError("label doit être un texte non vide.")
 
 
+def _absolute_paths(step: Any, names: tuple[str, ...]) -> None:
+    for name in names:
+        path = getattr(step, name)
+        if not isinstance(path, Path) or not path.is_absolute():
+            raise ValueError(f"{name} doit être un Path absolu.")
+
+
+@dataclass(frozen=True)
+class ExtractLandcoverFeatures:
+    """Caractéristiques des objets d'une segmentation existante, sans objet QGIS."""
+
+    preparation_directory: Path
+    segmentation_directory: Path
+    output_parent: Path
+    label: str = "Caractéristiques des objets OBIA"
+
+    def __post_init__(self) -> None:
+        _absolute_paths(self, ("preparation_directory", "segmentation_directory",
+                               "output_parent"))
+
+
+@dataclass(frozen=True)
+class DelineateLandcover:
+    """Fusion des objets et vectorisation des unités délimitées, sans objet QGIS."""
+
+    preparation_directory: Path
+    segmentation_directory: Path
+    features_directory: Path
+    output_parent: Path
+    config: DelineationConfig
+    label: str = "Délimitation des unités OBIA"
+
+    def __post_init__(self) -> None:
+        _absolute_paths(self, ("preparation_directory", "segmentation_directory",
+                               "features_directory", "output_parent"))
+        if type(self.config) is not DelineationConfig:
+            raise ValueError("config doit être une DelineationConfig exacte.")
+
+
+# Étapes OBIA : tâche dédiée, verrou inter-instances, attente de l'arrêt effectif.
+LANDCOVER_STEPS = (PrepareLandcover, SegmentLandcover, ExtractLandcoverFeatures,
+                   DelineateLandcover)
+
+
 @dataclass(frozen=True)
 class Pause:
     """Étape cédée par une boucle Python : rendre la main à la boucle d'événements."""
@@ -167,7 +208,8 @@ def render_notes(notes: Counter[str]) -> list[str]:
     return [template.format(n=n) for template, n in notes.items()]
 
 
-Step = AlgCall | Fetch | Pause | PrepareLandcover | SegmentLandcover
+LandcoverStep = PrepareLandcover | SegmentLandcover | ExtractLandcoverFeatures | DelineateLandcover
+Step = AlgCall | Fetch | Pause | LandcoverStep
 # Type de retour des outils et helpers qui cèdent des étapes (appel avec « yield from »).
 Steps = Generator[Step, Any, Any]
 Done = Callable[[Any, "BaseException | None"], None]  # (résultats, erreur)
@@ -176,7 +218,7 @@ Done = Callable[[Any, "BaseException | None"], None]  # (résultats, erreur)
 class Executor(Protocol):
     def start(
         self,
-        step: AlgCall | Fetch | PrepareLandcover | SegmentLandcover,
+        step: AlgCall | Fetch | LandcoverStep,
         done: Done,
     ) -> Any:
         """Lance l'étape et renvoie un handle ; done est appelé une fois, sur le thread
@@ -351,14 +393,14 @@ class JobManager:
 
     # --- Déroulement ---------------------------------------------------------------------
     def _launch(self, job: Job, step: Any) -> None:
-        job.wait_for_stop = isinstance(step, (PrepareLandcover, SegmentLandcover))
+        job.wait_for_stop = isinstance(step, LANDCOVER_STEPS)
 
         if isinstance(step, Pause):
             job.algorithm, job.progress, job.handle = step.label, step.progress, None
             self.executor.pause(lambda: self._advance(job, None, None))
             return
 
-        if not isinstance(step, (AlgCall, Fetch, PrepareLandcover, SegmentLandcover)):
+        if not isinstance(step, (AlgCall, Fetch, *LANDCOVER_STEPS)):
             self._advance(job, None, TypeError(f"Étape inattendue : {step!r}"))
             return
 
@@ -384,7 +426,7 @@ class JobManager:
 
         if job.wait_for_stop:
             cancellation = isinstance(
-                error, (PreparationCancelledError, SegmentationCancelledError)
+                error, LANDCOVER_CANCELLED
             )
             requested = job.cancellation_reason is not None
 
@@ -483,7 +525,7 @@ class JobManager:
         """
         # Une erreur technique reste prioritaire sur l'abandon du job.
         if error is not None and not isinstance(
-            error, (PreparationCancelledError, SegmentationCancelledError)
+            error, LANDCOVER_CANCELLED
         ):
             self._stop_landcover(job, error, FAILED)
             return

@@ -40,10 +40,22 @@ from qgis.PyQt.QtNetwork import QNetworkRequest
 
 from ..compat import EXCLUDE_USER_INPUT
 from ..core.errors import ErrorCode, ToolError
-from ..core.jobs import AlgCall, Done, Fetch, PrepareLandcover, SegmentLandcover
+from ..core.jobs import (
+    LANDCOVER_STEPS,
+    AlgCall,
+    Done,
+    Fetch,
+    LandcoverStep,
+    PrepareLandcover,
+    SegmentLandcover,
+)
 from .landcover_guard import acquire_landcover_guard
 from .landcover_segmentation_tasks import LandcoverSegmentationTask
+from .landcover_step_tasks import LandcoverStepTask
 from .landcover_tasks import LandcoverPreparationTask
+
+ObiaTask = LandcoverPreparationTask | LandcoverSegmentationTask | LandcoverStepTask
+_OBIA_TASKS = (LandcoverPreparationTask, LandcoverSegmentationTask, LandcoverStepTask)
 
 PUMP_INTERVAL_S = 0.1  # repli synchrone : repeindre l'interface au plus toutes les 100 ms
 logger = logging.getLogger("cynogis.tasks")
@@ -64,29 +76,31 @@ class ProcessingExecutor:
         # La tâche garde des pointeurs vers context et feedback : les garder en vie jusqu'à
         # executed, même après une annulation.
         self._active: set[
-            _Handle | _FetchTask | LandcoverPreparationTask | LandcoverSegmentationTask
+            _Handle | _FetchTask | ObiaTask
         ] = set()
 
     def start(
         self,
-        step: AlgCall | Fetch | PrepareLandcover | SegmentLandcover,
+        step: AlgCall | Fetch | LandcoverStep,
         done: Done,
-    ) -> _Handle | _FetchTask | LandcoverPreparationTask | LandcoverSegmentationTask:
-        if isinstance(step, (PrepareLandcover, SegmentLandcover)):
+    ) -> _Handle | _FetchTask | ObiaTask:
+        if isinstance(step, LANDCOVER_STEPS):
             release_guard = acquire_landcover_guard()
 
             def forget(
-                completed: LandcoverPreparationTask | LandcoverSegmentationTask,
+                completed: ObiaTask,
             ) -> None:
                 self._active.discard(completed)
                 release_guard()
 
-            obia_task: LandcoverPreparationTask | LandcoverSegmentationTask
+            obia_task: ObiaTask
             try:
                 if isinstance(step, PrepareLandcover):
                     obia_task = LandcoverPreparationTask(step, done, forget)
-                else:
+                elif isinstance(step, SegmentLandcover):
                     obia_task = LandcoverSegmentationTask(step, done, forget)
+                else:
+                    obia_task = LandcoverStepTask(step, done, forget)
             except Exception:
                 release_guard()
                 raise
@@ -141,7 +155,7 @@ class ProcessingExecutor:
             | None
         ),
     ) -> float:
-        if isinstance(handle, (LandcoverPreparationTask, LandcoverSegmentationTask)):
+        if isinstance(handle, _OBIA_TASKS):
             return float(handle.progress())
         return float(handle.feedback.progress()) if handle is not None else 0.0
 
@@ -158,7 +172,7 @@ class ProcessingExecutor:
             | None
         ),
     ) -> None:
-        if isinstance(handle, (LandcoverPreparationTask, LandcoverSegmentationTask)):
+        if isinstance(handle, _OBIA_TASKS):
             # Le callback reste raccordé jusqu'à la terminaison effective.
             handle.cancel()
             return
