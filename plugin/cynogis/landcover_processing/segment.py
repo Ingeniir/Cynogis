@@ -8,7 +8,8 @@ Chaque identifiant désigne une composante connexe à quatre voisins.
 
 Prototype limité à 1 000 000 pixels et 10 000 graines demandées.
 La surface cible n'est PAS une surface minimale garantie.
-Aucun lissage, fusion cartographique ou classement sémantique ici.
+Lissage gaussien masqué facultatif avant SLIC (smoothing_m) ; aucune fusion
+cartographique ni classement sémantique ici.
 Aucune annulation en cours d'appel SLIC n'est implémentée dans ce module.
 """
 
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 
 MAX_PIXELS = 1_000_000
 MAX_REQUESTED_SEGMENTS = 10_000
+MAX_SMOOTHING_M = 20.0
 
 
 def _positive_float(value: object, name: str) -> float:
@@ -44,21 +46,52 @@ class SlicConfig:
 
     Les valeurs par défaut sont des points de départ expérimentaux,
     pas des réglages validés pour les paysages de La Réunion.
+
+    smoothing_m :
+        écart type (m) du flou gaussien appliqué à l'image avant SLIC, pour
+        effacer les textures fines (rangs de canne, feuillage) sans déplacer
+        les grandes limites. 0 : aucun lissage. Seule la segmentation voit
+        l'image lissée : couleurs et surfaces restent calculées sur l'original.
     """
 
-    target_segment_area_m2: float = 25.0
+    target_segment_area_m2: float = 100.0
     compactness: float = 10.0
     max_num_iter: int = 10
+    smoothing_m: float = 2.0
 
     def __post_init__(self) -> None:
         for name in ("target_segment_area_m2", "compactness"):
             object.__setattr__(self, name, _positive_float(getattr(self, name), name))
+        if self.smoothing_m != 0:
+            smoothing = _positive_float(self.smoothing_m, "smoothing_m")
+            if smoothing > MAX_SMOOTHING_M:
+                raise ValueError(f"smoothing_m doit être au plus {MAX_SMOOTHING_M:g} m.")
+            object.__setattr__(self, "smoothing_m", smoothing)
+        elif isinstance(self.smoothing_m, bool):
+            raise ValueError("smoothing_m doit être un nombre positif ou nul.")
+        else:
+            object.__setattr__(self, "smoothing_m", 0.0)
         if (
             isinstance(self.max_num_iter, bool)
             or not isinstance(self.max_num_iter, int)
             or not 1 <= self.max_num_iter <= 100
         ):
             raise ValueError("max_num_iter doit être un entier entre 1 et 100.")
+
+
+def _masked_gaussian(image, mask, sigma_px: float):
+    """Flou gaussien normalisé : seuls les pixels du masque contribuent."""
+    import numpy as np
+    from scipy.ndimage import gaussian_filter
+
+    weight = gaussian_filter(mask.astype(np.float32), sigma_px)
+    smoothed = np.empty_like(image)
+    for channel in range(image.shape[2]):
+        smoothed[..., channel] = gaussian_filter(image[..., channel], sigma_px)
+    inside = mask & (weight > 0)
+    smoothed[inside] /= weight[inside][:, None]
+    smoothed[~mask] = 0.0
+    return smoothed
 
 
 def segment_rgb(
@@ -140,9 +173,10 @@ def segment_rgb(
         from skimage.segmentation import slic
 
         image = rgb.astype(np.float32, copy=True) / np.float32(255.0)
-        # Sans lissage, les valeurs extérieures ne doivent pas apporter
-        # de données radiométriques utiles au calcul masqué.
+        # Les valeurs extérieures ne doivent apporter aucune donnée radiométrique.
         image[~mask] = 0.0
+        if config.smoothing_m > 0:
+            image = _masked_gaussian(image, mask, config.smoothing_m / resolution)
         raw = slic(
             image,
             n_segments=requested,

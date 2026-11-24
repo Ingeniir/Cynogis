@@ -474,6 +474,7 @@ def test_real_manifeste_concorde_avec_l_appel_slic(sample, monkeypatch):
         assert call[key] == algorithm[key], key
     assert call["compactness"] == report["configuration"]["compactness"]
     assert call["max_num_iter"] == report["configuration"]["max_num_iter"]
+    assert algorithm["presmoothing_sigma_px"] == report["configuration"]["smoothing_m"] / PIXEL
     # Le nombre final d'objets n'est pas exigé égal au nombre demandé.
     assert report["diagnostics"]["objects"] >= 1
 

@@ -123,7 +123,7 @@ def assert_contract(output, mask):
 # --- Configuration -------------------------------------------------------------------------
 def test_config_defaults_are_normalised_floats():
     config = SlicConfig()
-    assert config == SlicConfig(25.0, 10.0, 10)
+    assert config == SlicConfig(100.0, 10.0, 10, 2.0)
     assert isinstance(SlicConfig(target_segment_area_m2=4).target_segment_area_m2, float)
 
 
@@ -348,6 +348,39 @@ def test_double_invalid_label_grid_is_refused():
                 raises(RuntimeError, "grille d'étiquettes invalide"):
             segment_rgb(random_rgb(6, 6), mask, pixel_size_m=1.0,
                         config=SlicConfig(target_segment_area_m2=4.0))
+
+
+# --- Lissage préalable (smoothing_m) -------------------------------------------------------
+def test_config_smoothing_bounds():
+    for value in (True, False, -0.5, float("nan"), float("inf"), 20.5, "2", None):
+        with raises(ValueError, "smoothing_m"):
+            SlicConfig(smoothing_m=value)
+    assert SlicConfig(smoothing_m=0).smoothing_m == 0.0
+    assert type(SlicConfig(smoothing_m=0).smoothing_m) is float
+    assert SlicConfig(smoothing_m=20).smoothing_m == 20.0
+
+
+def test_masked_gaussian_ignore_l_exterieur_et_conserve_une_couleur_uniforme():
+    mask = np.zeros((20, 20), bool)
+    mask[3:17, 3:17] = True
+    image = np.full((20, 20, 3), 0.4, np.float32)
+    image[~mask] = 0.0
+    smoothed = segment._masked_gaussian(image, mask, 3.0)
+    # Normalisation par le poids du masque : pas d'assombrissement près du bord.
+    assert np.allclose(smoothed[mask], 0.4, atol=1e-6)
+    assert not np.any(smoothed[~mask])
+
+
+def test_real_lissage_insensible_aux_valeurs_hors_masque():
+    mask = np.zeros((40, 40), bool)
+    mask[5:35, 5:35] = True
+    base = random_rgb(40, 40)
+    other = base.copy()
+    other[~mask] = 255 - other[~mask]
+    config = SlicConfig(target_segment_area_m2=16.0, smoothing_m=2.0)
+    first = segment_rgb(base, mask, pixel_size_m=0.5, config=config)
+    second = segment_rgb(other, mask, pixel_size_m=0.5, config=config)
+    assert np.array_equal(first, second)
 
 
 if __name__ == "__main__":

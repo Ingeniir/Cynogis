@@ -479,6 +479,7 @@ def _build_segmentation_step(
     target_segment_area_m2: float,
     compactness: float,
     max_num_iter: int,
+    smoothing_m: float = 2.0,
 ) -> tuple[SegmentLandcover, list[str]]:
     """Valide les paramètres publics sans ouvrir de manifeste ou de raster."""
     # Import local : le catalogue ne doit pas charger le module de segmentation.
@@ -490,6 +491,7 @@ def _build_segmentation_step(
             target_segment_area_m2=target_segment_area_m2,
             compactness=compactness,
             max_num_iter=max_num_iter,
+            smoothing_m=smoothing_m,
         )
     except ValueError as exc:
         raise ToolError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
@@ -530,7 +532,7 @@ def _build_segmentation_step(
         "number",
         "Surface cible strictement positive en m² ; pas un minimum garanti.",
         required=False,
-        default=25.0,
+        default=100.0,
     ),
     "compactness": Param(
         "number",
@@ -546,13 +548,23 @@ def _build_segmentation_step(
         minimum=1,
         maximum=100,
     ),
+    "smoothing_m": Param(
+        "number",
+        "Flou gaussien (m) avant segmentation, pour ignorer les textures fines "
+        "(rangs de canne, feuillage) ; 0 à 20, 0 désactive.",
+        required=False,
+        default=2.0,
+        minimum=0,
+        maximum=20,
+    ),
 })
 def segment_landcover(
     preparation_directory: str,
     output_parent: str | None = None,
-    target_segment_area_m2: float = 25.0,
+    target_segment_area_m2: float = 100.0,
     compactness: float = 10.0,
     max_num_iter: int = 10,
+    smoothing_m: float = 2.0,
 ) -> Steps:
     """Segmente une préparation OBIA en objets non classés, via un job.
 
@@ -570,6 +582,7 @@ def segment_landcover(
         target_segment_area_m2=target_segment_area_m2,
         compactness=compactness,
         max_num_iter=max_num_iter,
+        smoothing_m=smoothing_m,
     )
 
     # Ne pas intercepter ici les erreurs de la tâche : préserver les règles

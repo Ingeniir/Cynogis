@@ -406,6 +406,8 @@ def persist_segmentation(
                 "name": "masked_slic_then_connected_components",
                 "enforce_connectivity": True,
                 "sigma": 0,
+                "presmoothing": "normalized_masked_gaussian",
+                "presmoothing_sigma_px": config.smoothing_m / resolution,
                 "convert2lab": True,
                 "min_size_factor": 0.5,
                 "max_size_factor": 3.0,

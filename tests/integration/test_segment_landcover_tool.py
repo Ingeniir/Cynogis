@@ -289,7 +289,10 @@ def test_registry_catalog_matches_signature():
         schema = entry["input_schema"]
         properties = schema["properties"]
         assert schema["required"] == ["preparation_directory"]  # output_parent facultatif
-        assert properties["target_segment_area_m2"]["default"] == 25.0
+        assert properties["target_segment_area_m2"]["default"] == 100.0
+        assert properties["smoothing_m"] == {
+            "type": "number", "description": properties["smoothing_m"]["description"],
+            "minimum": 0, "maximum": 20, "default": 2.0}
         assert properties["compactness"]["default"] == 10.0
         assert properties["max_num_iter"] == {
             "type": "integer", "description": properties["max_num_iter"]["description"],
@@ -324,13 +327,14 @@ def test_params_defaults_and_existing_conventions():
         # Défauts omis, null = défaut, 10.0 normalisé en entier (conventions existantes).
         assert captured == [SlicConfig(), SlicConfig()]
         assert all(type(c) is SlicConfig and type(c.max_num_iter) is int for c in captured)
-        assert captured[0] == SlicConfig(25.0, 10.0, 10)
+        assert captured[0] == SlicConfig(100.0, 10.0, 10, 2.0)
 
 
 def test_real_custom_configuration_in_manifest():
     with environment() as env:
         dispatcher, _ = env.dispatcher()
-        custom = {"target_segment_area_m2": 7.0, "compactness": 12.5, "max_num_iter": 8}
+        custom = {"target_segment_area_m2": 7.0, "compactness": 12.5, "max_num_iter": 8,
+                  "smoothing_m": 1.5}
         started = dispatcher.dispatch(request(TOOL, **params(env, **custom)))
         final = final_response(dispatcher, started.job_id)
         assert final.ok, final.error
